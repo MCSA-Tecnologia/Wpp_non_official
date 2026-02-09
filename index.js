@@ -1,4 +1,4 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, Events } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
@@ -94,7 +94,7 @@ function loadContacts() {
     }
 }
 
-// UPDATED: Enhanced error logging
+// UPDATED: Enhanced error logging with delivery tracking
 function markContactAsSent(phoneNumber, success = true, error = null) {
     const maxRetries = 5;
     const retryDelay = 100;
@@ -129,6 +129,48 @@ function markContactAsSent(phoneNumber, success = true, error = null) {
                 // Format: ERROR | Code | Description | Timestamp
                 currentContacts[contactIndex].sentAt = `ERROR | ${errorCode} | ${errorMessage} | ${timestamp}`;
             }
+
+            const tempPath = contactsPath + '.tmp';
+            fs.writeFileSync(tempPath, JSON.stringify(currentContacts, null, 2), 'utf8');
+            fs.renameSync(tempPath, contactsPath);
+
+            return true;
+        } catch (error) {
+            if (attempt === maxRetries - 1) return false;
+            const jitter = Math.random() * retryDelay;
+            const delay = retryDelay * (attempt + 1) + jitter;
+            const start = Date.now();
+            while (Date.now() - start < delay) {}
+        }
+    }
+    return false;
+}
+
+// NEW: Mark contact as delivered
+function markContactAsDelivered(phoneNumber, ackLevel) {
+    const maxRetries = 5;
+    const retryDelay = 100;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            const currentContacts = loadContacts();
+            const contactIndex = currentContacts.findIndex(c => c.phone === phoneNumber);
+            if (contactIndex === -1) return false;
+
+            // Verify assignment
+            if (currentContacts[contactIndex].sentBy && currentContacts[contactIndex].sentBy !== accountId) {
+                return false;
+            }
+
+            // Only update if message was sent successfully
+            if (!currentContacts[contactIndex].sent) {
+                return false;
+            }
+
+            // Update delivery status
+            currentContacts[contactIndex].delivered = true;
+            currentContacts[contactIndex].deliveredAt = new Date().toISOString();
+            currentContacts[contactIndex].ackLevel = ackLevel; // 2=delivered, 3=read, 4=played
 
             const tempPath = contactsPath + '.tmp';
             fs.writeFileSync(tempPath, JSON.stringify(currentContacts, null, 2), 'utf8');
@@ -218,6 +260,26 @@ async function resolvePhoneNumber(client, from) {
         return phone ? phone.replace('@c.us', '') : null;
     }
     return null;
+}
+
+// NEW: Helper function to convert phone number to match format
+function normalizePhoneForMatching(phone) {
+    // Remove all non-digits and add + prefix if not present
+    const digits = phone.replace(/\D/g, '');
+    return '+' + digits;
+}
+
+// NEW: Helper to get ack level description
+function ackLevelToText(ack) {
+    const levels = {
+        [-1]: 'pending (server not received)',
+        0:  'pending',
+        1:  'sent (gray ✓✓)',
+        2:  'delivered (blue ✓✓)',
+        3:  'read (blue ✓✓✓)',
+        4:  'played (voice/video)'
+    };
+    return levels[ack] || `unknown (${ack})`;
 }
 
 try {
@@ -324,6 +386,32 @@ client.on('ready', async () => {
     }
 });
 
+// NEW: Listen for message acknowledgment (delivery confirmation)
+client.on(Events.MESSAGE_ACK, (msg, ack) => {
+    try {
+        // Only process if ack is 2 (delivered) or higher
+        if (ack >= 2) {
+            // Extract phone number from message
+            const chatId = msg.to || msg.from;
+            let phoneNumber = chatId.replace('@c.us', '');
+            
+            // Add + prefix if not present
+            if (!phoneNumber.startsWith('+')) {
+                phoneNumber = '+' + phoneNumber;
+            }
+
+            // Try to find and mark contact as delivered
+            const success = markContactAsDelivered(phoneNumber, ack);
+            
+            if (success) {
+                console.log(`[${accountId}] ✓✓ Delivery confirmed for ${phoneNumber} → ${ackLevelToText(ack)}`);
+            }
+        }
+    } catch (error) {
+        console.error(`[${accountId}] ❌ Error processing MESSAGE_ACK:`, error.message);
+    }
+});
+
 client.on('authenticated', () => console.log(`[${accountId}] ✅ Authenticated successfully!`));
 
 client.on('disconnected', (reason) => console.log(`[${accountId}] Disconnected:`, reason));
@@ -377,12 +465,12 @@ if (!isOneShotMode) {
                         await appendLeadToSheet(phoneNumber, state.cpf, state.email);
                         await client.sendMessage(message.from, 'Obrigado! Um especialista entrará em contato em breve.');
                     } else {
-                        await client.sendMessage(message.from, 'Já recebemos seus dados.');
+                        await client.sendMessage(message.from, 'Sua requisição já foi enviada, em breve retornaremos com um de nossos advogados 😊');
                     }
                 } else {
                     state.postCompletionReplies += 1;
                     if (state.postCompletionReplies > MAX_WRONG_ANSWERS) { state.blocked = true; return; }
-                    await client.sendMessage(message.from, 'Já recebemos nossos dados.');
+                    await client.sendMessage(message.from, 'Sua requisição já foi enviada, em breve retornaremos com um de nossos advogados 😊');
                 }
             } catch (error) {
                 console.error(`[${accountId}] ❌ Error replying:`, error.message);

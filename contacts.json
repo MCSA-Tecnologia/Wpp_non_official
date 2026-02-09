@@ -1,42 +1,13 @@
 [
   {
-    "phone": "+5531991376123",
-    "message": "Hello! This is a test message from our system.",
-    "delay": 3000,
-    "sent": false,
-    "sentBy": null,
-    "sentAt": null
-  },
-  {
-    "phone": "+554197233123",
-    "message": "Hello! This is a test message from our system.",
-    "delay": 3000,
-    "sent": false,
-    "sentBy": null,
-    "sentAt": null
-  },
-  {
-    "phone": "+5531999887766",
-    "message": "Hello! This is a test message from our system.",
-    "delay": 4000,
-    "sent": false,
-    "sentBy": null,
-    "sentAt": null
-  },
-  {
-    "phone": "+554198765432",
-    "message": "Hello! This is a test message from our system.",
-    "delay": 4000,
-    "sent": false,
-    "sentBy": null,
-    "sentAt": null
-  },
-  {
-    "phone": "+5531988776655",
-    "message": "Hello! This is a test message from our system.",
-    "delay": 5000,
-    "sent": false,
-    "sentBy": null,
-    "sentAt": null
+    "phone": "+5531991376705",
+    "message": "SABOOORRRR… SEM DÍVIDA!\nImagina o gosto de ver tudo resolvido…🤔\n \nAqui na Construtora Tenda você pode incluir as parcelas vencidas + a vencer em um só acordo.\n \nE pra fechar com chave de ouro:\n💰 Entrada facilitada de R$150\n \nGaranta essa oferta somente essa semana!!",
+    "delay": 30000,
+    "sent": true,
+    "sentBy": "account_1",
+    "delivered": false,
+    "deliveredAt": null,
+    "ackLevel": null,
+    "sentAt": "2026-02-09T13:55:04.047Z"
   }
 ]

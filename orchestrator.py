@@ -57,9 +57,9 @@ contacts_json_built = False
 def fetch_negociador_df() -> Optional[pd.DataFrame]:
     """Fetch negotiator data from the legacy database."""
     try:
-        query_negociador = settings.QUERY_NEGOCIADOR_BY_CPF
+        query_negociador = settings.QUERY_CLIENTS_PHONE
         if not query_negociador:
-            print("⚠️  QUERY_NEGOCIADOR_BY_CPF is empty. Skipping contacts generation.")
+            print("⚠️  QUERY_CLIENTS_PHONE is empty. Skipping contacts generation.")
             return None
 
         conn = pyodbc.connect(
@@ -87,6 +87,7 @@ def df_to_contacts_json(
     """
     Create contacts.json from a DataFrame.
     Alternates `sentBy` between authenticated accounts when provided.
+    Now includes delivery tracking fields.
     """
     if "Telefone" not in df.columns:
         raise ValueError("DataFrame must contain a 'Telefone' column.")
@@ -116,6 +117,9 @@ def df_to_contacts_json(
             "delay": 30000,
             "sent": False,
             "sentBy": sent_by,
+            "delivered": False,      # NEW: Track if message was delivered
+            "deliveredAt": None,     # NEW: Timestamp when delivered
+            "ackLevel": None,        # NEW: WhatsApp ack level (2=delivered, 3=read, 4=played)
             "sentAt": None
         })
 
@@ -141,6 +145,7 @@ def print_header():
     print("╔═══════════════════════════════════════════════════════════╗")
     print("║   WhatsApp Smart Orchestrator with Auto-Coordinator      ║")
     print("║   Random Load Balancing • Only Authenticated Accounts    ║")
+    print("║   Now with Delivery Confirmation Tracking                ║")
     print("╚═══════════════════════════════════════════════════════════╝")
     print()
 
@@ -233,56 +238,58 @@ def wait_for_all_authentication():
         current_auth_count = sum(1 for acc in started_accounts if acc['authenticated'])
 
         if current_auth_count == total_to_wait:
-            print(f"\n✅ All {total_to_wait} account(s) authenticated!")
+            print(f"\n✅ All {total_to_wait} account(s) authenticated successfully!\n")
             return True
 
-        # Optional: Print progress
-        # sys.stdout.write(f"\rProgress: {current_auth_count}/{total_to_wait} authenticated")
-        # sys.stdout.flush()
-
+        # Sleep briefly before next check
         time.sleep(1)
 
-    print(f"\n⚠️ Timeout waiting. {current_auth_count}/{total_to_wait} authenticated.")
-    # Proceed anyway with what we have? Or exit.
-    # Let's return False if not all authed, or True if at least one.
-    return current_auth_count > 0
+    # If we get here, we timed out
+    auth_accounts = [acc['name'] for acc in started_accounts if acc['authenticated']]
+    unauth_accounts = [acc['name'] for acc in started_accounts if not acc['authenticated']]
+
+    if auth_accounts:
+        print(f"\n⚠️  Timeout: Only {len(auth_accounts)}/{total_to_wait} account(s) authenticated:")
+        for name in auth_accounts:
+            print(f"   ✅ {name}")
+    if unauth_accounts:
+        print(f"\n   The following accounts failed to authenticate:")
+        for name in unauth_accounts:
+            print(f"   ❌ {name}")
+
+    # Decide if we want to proceed with partial authentication or fail completely
+    # For now, let's require all accounts
+    return len(auth_accounts) == total_to_wait
 
 def check_files():
     """Check if required files exist"""
-    print("🔍 Checking required files...")
-
     if not os.path.exists('index.js'):
-        print("❌ Error: index.js not found!")
+        print("❌ index.js not found!")
         return False
-    print("✅ index.js found")
-
-    print()
     return True
 
-def build_contacts_json_final():
-    """Generate contacts.json using authenticated accounts list"""
-    global pending_contacts_df, contacts_json_built
+def build_contacts_json_final() -> bool:
+    """
+    After authentication, we know which accounts are authenticated.
+    Generate contacts.json properly assigned to those accounts.
+    """
+    global contacts_json_built
 
-    if contacts_json_built:
-        return True
-
-    print("\n📝 Generating contacts.json...")
-
-    if pending_contacts_df is None or pending_contacts_df.empty:
-        print("⚠️  No contacts data available (pending_contacts_df is empty).")
-        return False
-
-    # Get authenticated IDs
-    auth_ids = [acc['id'] for acc in ACCOUNTS if acc['authenticated']]
+    auth_ids = list(authenticated_accounts)  # IDs of authenticated accounts
 
     if not auth_ids:
-        print("❌ No authenticated accounts found. Cannot assign contacts.")
+        print("❌ No authenticated accounts available to assign contacts!")
         return False
 
-    print(f"   Found {len(pending_contacts_df)} contacts in DB.")
+    if pending_contacts_df is None or pending_contacts_df.empty:
+        print("❌ No contacts to assign (pending_contacts_df is empty).")
+        return False
+
+    print(f"\n📋 Generating {CONTACTS_FILE} with delivery tracking fields...")
+    print(f"   Total contacts to distribute: {len(pending_contacts_df)}")
     print(f"   Assigning to {len(auth_ids)} authenticated account(s).")
 
-    default_message = getattr(settings, 'DEFAULT_MESSAGE', "Olá! Temos uma proposta para você.")
+    default_message = getattr(settings.CONTACT_MESSAGE, 'DEFAULT_MESSAGE', settings.CONTACT_MESSAGE)
 
     try:
         df_to_contacts_json(
@@ -326,6 +333,7 @@ def monitor_and_commands(accounts):
     print("\n📝 Commands:")
     print("  • 'status'    - Show account status")
     print("  • 'stats'     - Show sending statistics")
+    print("  • 'delivery'  - Show delivery confirmation stats")
     print("  • 'terminate' - Stop all bots")
     print("=" * 60)
     print()
@@ -397,9 +405,46 @@ def monitor_and_commands(accounts):
                     print("─" * 60)
                     print()
 
+                elif user_input == 'delivery':
+                    contacts = load_contacts()
+                    total = len(contacts)
+                    sent = len([c for c in contacts if c.get('sent', False)])
+                    delivered = len([c for c in contacts if c.get('delivered', False)])
+                    read = len([c for c in contacts if c.get('ackLevel') == 3])
+                    played = len([c for c in contacts if c.get('ackLevel') == 4])
+
+                    print("\n📊 Delivery Confirmation Statistics:")
+                    print("─" * 60)
+                    print(f"  Total contacts: {total}")
+                    print(f"  Sent: {sent}")
+                    print(f"  Delivered (✓✓): {delivered}")
+                    print(f"  Read (✓✓✓): {read}")
+                    print(f"  Played (voice/video): {played}")
+                    
+                    if sent > 0:
+                        delivery_rate = (delivered / sent) * 100
+                        print(f"\n  Delivery rate: {delivery_rate:.1f}%")
+                        
+                        if read > 0:
+                            read_rate = (read / sent) * 100
+                            print(f"  Read rate: {read_rate:.1f}%")
+
+                    # Show breakdown by account
+                    by_account_delivery = {}
+                    for c in contacts:
+                        if c.get('delivered') and c.get('sentBy'):
+                            by_account_delivery[c['sentBy']] = by_account_delivery.get(c['sentBy'], 0) + 1
+
+                    if by_account_delivery:
+                        print("\n  Deliveries confirmed by account:")
+                        for acc_id, count in by_account_delivery.items():
+                            print(f"    - {acc_id}: {count}")
+                    print("─" * 60)
+                    print()
+
                 elif user_input:
                     print(f"⚠️  Unknown command: '{user_input}'")
-                    print("Valid commands: status, stats, terminate")
+                    print("Valid commands: status, stats, delivery, terminate")
                     print()
 
             except EOFError:
@@ -506,6 +551,7 @@ def main():
             print(f"❌ Failed to restart {account['name']}")
 
     print("\n✅ Bots are running and processing messages...")
+    print("💡 Delivery confirmations will be tracked automatically via MESSAGE_ACK events")
 
     # Run Monitor Loop
     monitor_and_commands(ACCOUNTS)
