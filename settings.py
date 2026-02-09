@@ -1,12 +1,13 @@
 import os
+from decouple import config
 import pandas as pd
-SERVER_OLD = os.getenv("SERVER_OLD", "")
-DATABASE_OLD = os.getenv("DATABASE_OLD", "")
-USERNAME_OLD = os.getenv("USERNAME_OLD", "")
-PASSWORD_OLD = os.getenv("PASSWORD_OLD", "")
+SERVER_OLD = config('SERVER_OLD')
+DATABASE_OLD = config('DATABASE_OLD')
+USERNAME_OLD = config('DBUSERNAME_OLD')
+PASSWORD_OLD = config('PASSWORD_OLD')
 
 
-QUERY_NEGOCIADOR_BY_CPF = """desselect distinct
+QUERY_CLIENTS_PHONE = """wwwwselect distinct top(100w0)
 	M.MoInadimplentesID,
 	dbo.RetornaNomeRazaoSocial(M.MoInadimplentesID)Cliente,
 	PC.PesDDD + PC.PesTelefone Telefone,
@@ -39,12 +40,20 @@ group by
 	PC.PesDDD + PC.PesTelefone
 order by 5 asc, 4 desc"""
 
-CONTACT_MESSAGE = ("olar, bro!!")
+CONTACT_MESSAGE = ("""SABOOORRRR… SEM DÍVIDA!
+Imagina o gosto de ver tudo resolvido…🤔
+ 
+Aqui na Construtora Tenda você pode incluir as parcelas vencidas + a vencer em um só acordo.
+ 
+E pra fechar com chave de ouro:
+💰 Entrada facilitada de R$150
+ 
+Garanta essa oferta somente essa semana!!""")
 
 df = pd.DataFrame(
     [
-        ["5531991376705", 0, True],
-        ["55 41 9723-3448", 0, False],
+        ["31991376705", 0, True],
+        #["41 9723-3448", 0, False],
     ],
     columns=["Telefone", "col2", "col3"]
 )
