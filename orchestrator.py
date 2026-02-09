@@ -110,7 +110,6 @@ def df_to_contacts_json(
         if normalized_accounts:
             # Alternate between accounts
             sent_by = normalized_accounts[index % len(normalized_accounts)]
-
         contacts.append({
             "phone": normalize_phone_br(row["Telefone"]),
             "message": message,
@@ -169,6 +168,12 @@ def save_contacts(contacts):
         except Exception as e:
             print(f"❌ Error saving {CONTACTS_FILE}: {e}")
             return False
+
+def is_error_sent_at(value: Optional[str]) -> bool:
+    """Return True if sentAt contains an error marker."""
+    if not value:
+        return False
+    return str(value).startswith("ERROR")
 
 def start_bot(account):
     """Start a bot instance for an account (Persistent Mode)"""
@@ -368,11 +373,11 @@ def monitor_and_commands(accounts):
                     total = len(contacts)
                     sent = len([c for c in contacts if c.get('sent', False)])
                     unsent = total - sent
-                    errors = len([c for c in contacts if c.get('sentAt', '').startswith('ERROR_')])
+                    errors = len([c for c in contacts if is_error_sent_at(c.get('sentAt'))])
                     sent_success = len([
                         c for c in contacts
                         if c.get('sent', False)
-                        and not c.get('sentAt', '').startswith('ERROR_')
+                        and not is_error_sent_at(c.get('sentAt'))
                     ])
 
                     print("\n📊 Sending Statistics:")
@@ -388,7 +393,7 @@ def monitor_and_commands(accounts):
                     error_by_account = {}
                     for c in contacts:
                         if c.get('sent') and c.get('sentBy'):
-                            if c.get('sentAt', '').startswith('ERROR_'):
+                            if is_error_sent_at(c.get('sentAt')):
                                 error_by_account[c['sentBy']] = error_by_account.get(c['sentBy'], 0) + 1
                             else:
                                 by_account[c['sentBy']] = by_account.get(c['sentBy'], 0) + 1

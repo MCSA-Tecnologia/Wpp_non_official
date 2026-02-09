@@ -192,6 +192,33 @@ function randomBetween(min, max) {
     return Math.random() * (max - min) + min;
 }
 
+function waitForDelivery(client, message, timeoutMs = 30000) {
+    return new Promise((resolve) => {
+        let settled = false;
+
+        const cleanup = () => {
+            if (settled) return;
+            settled = true;
+            client.off(Events.MESSAGE_ACK, handler);
+            clearTimeout(timer);
+        };
+
+        const handler = (msg, ack) => {
+            if (msg?.id?._serialized === message?.id?._serialized) {
+                cleanup();
+                resolve(ack);
+            }
+        };
+
+        const timer = setTimeout(() => {
+            cleanup();
+            resolve(null);
+        }, timeoutMs);
+
+        client.on(Events.MESSAGE_ACK, handler);
+    });
+}
+
 let sheetsClientPromise;
 
 async function getSheetsClient() {
@@ -322,8 +349,12 @@ async function sendMessagesAndExit() {
         try {
             const chatId = contact.phone.replace('+', '') + '@c.us';
             console.log(`[${accountId}] 📤 Sending to ${contact.phone}...`);
-            await client.sendMessage(chatId, contact.message);
+            const sentMessage = await client.sendMessage(chatId, contact.message);
             markContactAsSent(contact.phone, true);
+            const ack = await waitForDelivery(client, sentMessage);
+            if (ack !== null && ack >= 2) {
+                markContactAsDelivered(contact.phone, ack);
+            }
         } catch (error) {
             console.error(`[${accountId}] ❌ Error sending to ${contact.phone}:`, error.message);
             await reportError(contact.phone);
@@ -357,8 +388,12 @@ async function sendMessagesAndStayAlive() {
         try {
             const chatId = contact.phone.replace('+', '') + '@c.us';
             console.log(`[${accountId}] 📤 Sending to ${contact.phone}...`);
-            await client.sendMessage(chatId, contact.message);
+            const sentMessage = await client.sendMessage(chatId, contact.message);
             markContactAsSent(contact.phone, true);
+            const ack = await waitForDelivery(client, sentMessage);
+            if (ack !== null && ack >= 2) {
+                markContactAsDelivered(contact.phone, ack);
+            }
 
             if (i < myUnsentContacts.length - 1) {
                 const delay = contact.delay || 2000;
