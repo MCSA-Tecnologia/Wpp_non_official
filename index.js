@@ -94,7 +94,8 @@ function loadContacts() {
     }
 }
 
-function markContactAsSent(phoneNumber, success = true) {
+// UPDATED: Enhanced error logging
+function markContactAsSent(phoneNumber, success = true, error = null) {
     const maxRetries = 5;
     const retryDelay = 100;
 
@@ -112,7 +113,22 @@ function markContactAsSent(phoneNumber, success = true) {
 
             currentContacts[contactIndex].sent = success;
             currentContacts[contactIndex].sentBy = accountId;
-            currentContacts[contactIndex].sentAt = success ? new Date().toISOString() : null;
+
+            if (success) {
+                currentContacts[contactIndex].sentAt = new Date().toISOString();
+            } else {
+                // Extract Error Code
+                const errorCode = error?.statusCode || error?.status || 500;
+
+                // Extract Error Description (Message)
+                // Replace pipes '|' with dashes '-' to avoid breaking the format
+                const errorMessage = (error?.message || "Unknown Error").replace(/\|/g, '-');
+
+                const timestamp = new Date().toISOString();
+
+                // Format: ERROR | Code | Description | Timestamp
+                currentContacts[contactIndex].sentAt = `ERROR | ${errorCode} | ${errorMessage} | ${timestamp}`;
+            }
 
             const tempPath = contactsPath + '.tmp';
             fs.writeFileSync(tempPath, JSON.stringify(currentContacts, null, 2), 'utf8');
@@ -210,7 +226,6 @@ try {
 } catch (error) {
     console.error(`[${accountId}] ❌ Error loading ${contactsFile}:`, error.message);
     if (isOneShotMode) process.exit(1);
-    // If persistent mode, we continue with empty contacts to allow waiting for file generation
     contacts = [];
 }
 
@@ -250,7 +265,8 @@ async function sendMessagesAndExit() {
         } catch (error) {
             console.error(`[${accountId}] ❌ Error sending to ${contact.phone}:`, error.message);
             await reportError(contact.phone);
-            markContactAsSent(contact.phone, false);
+            // Passing error object for logging
+            markContactAsSent(contact.phone, false, error);
         }
     }
     await client.destroy();
@@ -261,12 +277,9 @@ async function sendMessagesAndStayAlive() {
     console.log(`\n[${accountId}] 🚀 Starting to send messages...\n`);
     const currentContacts = loadContacts();
 
-    // Strict filtering: Only send if assigned to THIS account
     const myUnsentContacts = currentContacts.filter(c => {
-        if (c.sentBy) {
-            return c.sentBy === accountId && c.sent === false;
-        }
-        return false; // If no sentBy, do not send (prevents double sending)
+        if (c.sentBy) return c.sentBy === accountId && c.sent === false;
+        return false;
     });
 
     if (myUnsentContacts.length === 0) {
@@ -293,7 +306,8 @@ async function sendMessagesAndStayAlive() {
         } catch (error) {
             console.error(`[${accountId}] ❌ Error sending to ${contact.phone}:`, error.message);
             await reportError(contact.phone);
-            markContactAsSent(contact.phone, false);
+            // Passing error object for logging
+            markContactAsSent(contact.phone, false, error);
         }
     }
     console.log(`\n[${accountId}] ✅ All assigned messages sent! Listening for replies...\n`);
@@ -368,7 +382,7 @@ if (!isOneShotMode) {
                 } else {
                     state.postCompletionReplies += 1;
                     if (state.postCompletionReplies > MAX_WRONG_ANSWERS) { state.blocked = true; return; }
-                    await client.sendMessage(message.from, 'Já recebemos seus dados.');
+                    await client.sendMessage(message.from, 'Já recebemos nossos dados.');
                 }
             } catch (error) {
                 console.error(`[${accountId}] ❌ Error replying:`, error.message);
