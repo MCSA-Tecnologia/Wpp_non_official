@@ -1,87 +1,118 @@
 # AutoWpp
 
-Orquestrador robusto para envio automático de mensagens no WhatsApp usando múltiplas contas, com balanceamento de carga inteligente e sistema de auto-resposta.
+Orquestrador de disparo de mensagens no WhatsApp com múltiplas contas, distribuição automática de contatos e captura de leads por autoatendimento.
 
-O projeto foi atualizado para garantir estabilidade, evitando conflitos de navegador e garantindo que cada conta envie apenas suas mensagens atribuídas.
+Este projeto combina:
+- **Python (`orchestrator.py`)** para coordenar autenticação, geração de contatos e ciclo de execução.
+- **Node.js (`index.js`)** para conectar no WhatsApp Web, enviar mensagens, confirmar entrega e atender respostas.
 
-## Visão geral
+---
 
-O sistema opera com dois componentes principais:
+## 1) Visão geral da arquitetura
 
-1.  **`orchestrator.py`**: Gerencia o ciclo de vida completo. Busca dados do banco de dados, controla as sessões do WhatsApp, aguarda a autenticação de todas as contas e gera a distribuição de contatos.
-2.  **`index.js`**: Cliente do WhatsApp (Node.js). Responsável por conectar, autenticar, enviar as mensagens atribuídas e capturar leads (CPF/E-mail) via auto-resposta.
+### Componentes principais
 
-## Fluxo de Execução (3 Fases)
+1. **`orchestrator.py` (controle central)**
+   - Busca contatos no banco de dados.
+   - Inicia instâncias Node por conta (ex.: `account_1`, `account_2`).
+   - Aguarda autenticação das contas via QR Code.
+   - Gera/atualiza `contacts.json` com distribuição por conta (`sentBy`).
+   - Reinicia os bots para envio e monitoramento.
 
-Para evitar erros de "navegador já em execução" e garantir distribuição correta, o `orchestrator.py` segue um fluxo estrito de 3 fases:
+2. **`index.js` (bot por conta)**
+   - Faz login com sessão local (`LocalAuth`) por `accountId`.
+   - Envia somente os contatos atribuídos à conta atual.
+   - Atualiza status de envio (`sent`, `sentAt`) e entrega (`delivered`, `ackLevel`, `deliveredAt`).
+   - Mantém auto-resposta ativa para capturar CPF/CNPJ + e-mail.
 
-1.  **Fase 1: Autenticação**
-    *   Inicia todas as contas definidas (`account_1`, `account_2`, etc).
-    *   Exibe os QR Codes para cada conta.
-    *   **Aguarda que TODAS as contas sejam autenticadas com sucesso.**
-    *   O sistema limpa o `contacts.json` temporariamente para evitar envios prematuros com dados antigos.
+3. **`contacts.json` (fila de envios)**
+   - Arquivo intermediário compartilhado entre Python e Node.
+   - Define mensagem, telefone, atraso e conta responsável (`sentBy`).
 
-2.  **Fase 2: Configuração e Distribuição**
-    *   Interrompe os bots para liberar os processos do navegador.
-    *   Busca os dados no banco de dados (SQL Server configurado em `settings.py`).
-    *   Gera o arquivo `contacts.json` distribuindo os contatos **alternadamente** apenas entre as contas que foram autenticadas com sucesso na Fase 1.
+---
 
-3.  **Fase 3: Envio e Monitoramento**
-    *   Reinicia os bots (eles fazem login automático usando a sessão salva).
-    *   Cada bot lê o `contacts.json`, filtra apenas os contatos onde `sentBy` corresponde ao seu ID e inicia o envio.
-    *   Os bots permanecem ativos após o envio para processar respostas (auto-resposta).
+## 2) Fluxo operacional completo (3 fases)
 
-## Requisitos
+O `orchestrator.py` executa um fluxo em 3 fases para reduzir conflitos de browser/sessão e garantir distribuição correta:
 
-- **Node.js** 18+ (recomendado)
-- **Python** 3.8+
-- **Bibliotecas Python:**
-    - `pandas`
-    - `pyodbc`
-    - (Instale via `pip install pandas pyodbc`)
-- **Dependências Node:**
-    - `whatsapp-web.js`
-    - `qrcode-terminal`
-    - `axios`
-    - `googleapis`
+### Fase 1 — Autenticação
+- Inicia todos os bots definidos em `ACCOUNTS`.
+- Exibe QR Code de cada conta no terminal.
+- Aguarda **todas** as contas iniciadas autenticarem com sucesso.
+- Limpa `contacts.json` antes do envio para evitar reaproveitar dados antigos.
 
-Instale as dependências com:
+### Fase 2 — Preparação e distribuição
+- Para os bots para liberar recursos/processos.
+- Busca contatos do banco SQL Server.
+- Converte os dados para `contacts.json`.
+- Distribui os contatos entre contas autenticadas em round-robin.
+- Remove contatos já entregues no mesmo dia (com base no backup `contacts.json.prev`) para reduzir duplicidade.
+
+### Fase 3 — Envio e monitoramento
+- Reinicia os bots com sessões já autenticadas.
+- Cada conta envia apenas contatos com `sentBy == accountId`.
+- O bot permanece ativo para:
+  - confirmar ACK de entrega/leitura;
+  - responder mensagens recebidas;
+  - capturar leads (CPF/CNPJ + e-mail) e registrar no Google Sheets.
+
+---
+
+## 3) Pré-requisitos
+
+- **Node.js 18+**
+- **Python 3.8+**
+- **SQL Server** acessível com credenciais em `settings.py`
+- Arquivos de integração Google:
+  - `Tetrakey.json` (credenciais OAuth)
+  - `token.json` (token OAuth)
+
+Instalação de dependências:
 
 ```bash
 npm install whatsapp-web.js qrcode-terminal axios googleapis
 pip install pandas pyodbc
 ```
 
-## Configuração
+---
 
-### 1. Variáveis de Ambiente (`.env`)
-Crie um arquivo `.env` na raiz do projeto com as seguintes configurações:
+## 4) Configuração detalhada
+
+## 4.1 Arquivo `.env`
+
+Crie um `.env` na raiz do projeto com:
 
 ```env
 # Google Sheets
 GOOGLE_SHEET_ID=
 GOOGLE_SHEET_RANGE=A:D
 
-# Relatórios de Erro (Opcional)
+# Relatório de erros
 ERROR_REPORT_URL=
 ERROR_REPORT_AUTH_TOKEN=
 ERROR_REPORT_HEADER_KEY=
 ERROR_REPORT_HEADER_VALUE=
 
-# Relatórios de Sucesso (Opcional)
+# Relatório de sucesso
 SUCCESS_REPORT_URL=
 SUCCESS_REPORT_HEADER_KEY=
 SUCCESS_REPORT_HEADER_VALUE=
 ```
 
-### 2. Banco de Dados (`settings.py`)
-Certifique-se de que o arquivo `settings.py` (importado no Python) contém as credenciais do banco de dados e a query SQL (`QUERY_NEGOCIADOR_BY_CPF`).
+> Observação importante: no estado atual do código, essas variáveis são tratadas como obrigatórias em `index.js`. Se estiverem vazias, o processo encerra com erro.
 
-## Estrutura do arquivo `contacts.json`
+## 4.2 `settings.py`
 
-Este arquivo é gerado **automaticamente** pelo orquestrador na Fase 2. Não é necessário editá-lo manualmente.
+Garanta que o arquivo contenha:
+- Credenciais de conexão (`SERVER_OLD`, `DATABASE_OLD`, `USERNAME_OLD`, `PASSWORD_OLD`).
+- Consulta SQL em `QUERY_CLIENTS_PHONE` com coluna **`Telefone`**.
+- Mensagem padrão em `CONTACT_MESSAGE` (string ou objeto com `DEFAULT_MESSAGE`).
 
-Exemplo de estrutura:
+---
+
+## 5) Estrutura do `contacts.json`
+
+Exemplo gerado pelo orquestrador:
 
 ```json
 [
@@ -91,83 +122,194 @@ Exemplo de estrutura:
     "delay": 30000,
     "sent": false,
     "sentBy": "account_1",
-    "sentAt": null
-  },
-  {
-    "phone": "+5531999999999",
-    "message": "Olá! Temos uma proposta para você.",
-    "delay": 30000,
-    "sent": false,
-    "sentBy": "account_2",
+    "delivered": false,
+    "deliveredAt": null,
+    "ackLevel": null,
     "sentAt": null
   }
 ]
 ```
 
-- **`sentBy`**: Campo crucial. Define exatamente qual conta deve enviar a mensagem. O bot verifica isso e ignora contatos de outros IDs.
-- **`sent`**: Atualizado automaticamente para `true` após o envio.
-- **`delay`**: Tempo de espera (em ms) entre mensagens de uma mesma conta.
+### Significado dos campos
+- `phone`: número normalizado, idealmente com DDI (`+55...`).
+- `message`: texto a enviar.
+- `delay`: espera base (ms) entre mensagens da mesma conta.
+- `sent`: marca envio concluído com sucesso.
+- `sentBy`: conta responsável por este contato.
+- `sentAt`: timestamp de envio ou string de erro (`ERROR | code | message | timestamp`).
+- `delivered`: indica confirmação de entrega (ACK >= 2).
+- `deliveredAt`: timestamp da confirmação.
+- `ackLevel`: nível de confirmação WhatsApp (`2=delivered`, `3=read`, `4=played`).
 
-## Como Executar
+---
 
-### Modo Principal (Orquestrador)
+## 6) Principais funções e como elas funcionam
 
-Use o script Python para iniciar todo o processo. Ele cuidará de tudo (autenticação, distribuição e envio).
+## 6.1 `orchestrator.py`
 
-```bash
-python3 orchestrator.py
-```
+### `fetch_negociador_df()`
+- Tenta executar `QUERY_CLIENTS_PHONE` no SQL Server via `pyodbc`.
+- Retorna `DataFrame` com contatos.
+- Em falha, usa fallback `settings.df`.
 
-### Comandos Disponíveis (Durante a execução)
+### `df_to_contacts_json(df, message, output_path, account_ids)`
+- Valida presença da coluna `Telefone`.
+- Normaliza números para formato com `+55` quando necessário.
+- Monta lista de contatos com campos de rastreio de envio/entrega.
+- Distribui `sentBy` alternando entre `account_ids`.
+- Salva JSON formatado.
 
-Após os bots iniciarem e começarem a enviar, você pode interagir com o terminal:
+### `start_bot(account)`
+- Executa `node index.js <account_id> contacts.json` em subprocesso.
+- Redireciona logs para monitoramento no terminal do orquestrador.
 
-- **`status`**: Mostra o status de cada conta (Autenticado/Não Autenticado) e se está rodando.
-- **`stats`**: Mostra estatísticas detalhadas (Total, Enviados, Falhas, erros por conta).
-- **`terminate`**: Para todos os bots de forma segura e encerra o script.
+### `monitor_authentication(process, account)`
+- Lê saída do processo Node em tempo real.
+- Marca conta como autenticada ao detectar logs de sucesso.
+- Mostra lembrete ao detectar geração de QR.
 
-### Modo Depuração (Única Conta)
+### `wait_for_all_authentication()`
+- Aguarda até todas as contas iniciadas autenticarem.
+- Timeout padrão de 120s.
+- Em timeout, lista contas autenticadas e não autenticadas.
 
-Para testar uma única conta sem o orquestrador, você pode rodar o Node diretamente:
+### `build_contacts_json_final()`
+- Gera `contacts.json` final somente após autenticação.
+- Reaplica distribuição round-robin entre contas válidas.
+- Remove contatos já entregues no dia atual (se existir backup prévio).
+
+### `monitor_and_commands(accounts)`
+Loop de comandos interativos:
+- `status`: estado das contas.
+- `stats`: totais, enviados, pendentes e erros por conta.
+- `delivery`: métricas de entrega/leitura.
+- `terminate`: encerra tudo com segurança.
+
+### `main()`
+- Executa as 3 fases (autenticação → preparação → envio).
+- Mantém o processo vivo para monitoramento e auto-resposta.
+
+---
+
+## 6.2 `index.js`
+
+### `loadEnv()` e `requireEnv(key)`
+- `loadEnv` lê manualmente `.env` e injeta no `process.env`.
+- `requireEnv` lança erro se variável obrigatória não existir.
+
+### `loadContacts()`
+- Lê `contacts.json` com retentativas simples.
+- Usado por funções de envio e atualização de status.
+
+### `markContactAsSent(phoneNumber, success, error)`
+- Atualiza `sent`, `sentBy` e `sentAt` de um contato.
+- Em falha, grava string estruturada de erro em `sentAt`.
+- Persiste alterações de forma atômica (`.tmp` + `rename`).
+
+### `markContactAsDelivered(phoneNumber, ackLevel)`
+- Marca `delivered=true`, define `deliveredAt` e `ackLevel`.
+- Só aplica se o contato já estiver `sent=true`.
+
+### `waitForDelivery(client, message, timeoutMs)`
+- Aguarda evento `MESSAGE_ACK` da mensagem enviada.
+- Resolve com nível ACK recebido ou `null` em timeout.
+
+### `sendMessagesAndStayAlive()`
+- Filtra contatos da conta atual (`sentBy === accountId` e `sent=false`).
+- Envia mensagens com delay + jitter.
+- Atualiza status de envio e entrega.
+- Ao final, mantém bot ativo para auto-resposta.
+
+### `sendMessagesAndExit()`
+- Fluxo one-shot: envia e finaliza processo.
+
+### `client.on('message_create', ...)`
+- Fluxo de captura de lead:
+  1. solicita/valida CPF ou CNPJ;
+  2. solicita e-mail;
+  3. registra em Google Sheets;
+  4. reporta sucesso em endpoint externo.
+
+---
+
+## 7) Como rodar o programa (passo a passo)
+
+## 7.1 Execução recomendada (orquestrador)
+
+1. Instale dependências:
+   ```bash
+   npm install whatsapp-web.js qrcode-terminal axios googleapis
+   pip install pandas pyodbc
+   ```
+2. Configure `.env` e `settings.py`.
+3. Inicie o orquestrador:
+   ```bash
+   python3 orchestrator.py
+   ```
+4. Escaneie o QR Code de cada conta solicitada.
+5. Aguarde conclusão das fases automaticamente.
+6. Use comandos no terminal para acompanhar (`status`, `stats`, `delivery`, `terminate`).
+
+## 7.2 Execução de depuração (conta única)
 
 ```bash
 node index.js account_1 contacts.json
 ```
 
-*Nota: Certifique-se de que o `contacts.json` existe e tem contatos atribuídos a `account_1`.*
+Para modo one-shot:
 
-## Funcionalidades
+```bash
+node index.js account_1 contacts.json oneshot
+```
 
-### Auto-resposta e Captura de Leads
-Após o envio da mensagem inicial, os bots ficam escutando respostas. O fluxo é:
-1. Cliente responde.
-2. Bot pede **CPF ou CNPJ**.
-3. Bot pede **E-mail**.
-4. Bot grava os dados na Google Sheets e envia para o endpoint de sucesso configurado.
+---
 
-### Balanceamento Inteligente
-O orquestrador distribui os contatos de forma alternada entre as contas disponíveis.
-- Se você tem 100 contatos e 2 contas autenticadas: Cada conta enviará para 50 contatos.
-- Se você tem 100 contatos e apenas 1 conta autentica: Essa conta enviará as 100 mensagens.
-- **Segurança:** Existe um delay inicial de 4 segundos entre o start de cada conta para evitar conflitos de recursos no Puppeteer.
+## 8) Resultados esperados
 
-### Tratamento de Falhas
-- Se um envio falhar, o contato permanece como `sent: false` e recebe um registro de erro no `sentAt`.
-- O erro é reportado ao `ERROR_REPORT_URL` se configurado.
+Ao executar corretamente, você deve observar:
 
-## Solução de Problemas (Troubleshooting)
+1. **Na autenticação**
+   - Logs de QR code.
+   - Mensagem `Authenticated successfully` / `Client is ready`.
 
-**Erro: "The browser is already running for..."**
-- **Causa:** Tentou rodar duas instâncias com o mesmo `accountId` ou conflito de sessão.
-- **Solução:** O orquestrador atual já lida com isso separando as fases e garantindo que os bots sejam parados antes de reiniciar.
+2. **Na preparação**
+   - Geração do `contacts.json` com distribuição por `sentBy`.
+   - Possível remoção de contatos já entregues no dia.
 
-**Uma conta não está enviando nada.**
-- Verifique o comando `stats`. Se a conta não aparecer na lista de envios, verifique se ela se autenticou na Fase 1.
-- Verifique o `contacts.json` gerado: os campos `sentBy` estão corretos?
+3. **No envio**
+   - Logs de envio por número.
+   - Atualização de `sent=true` e `sentAt`.
+   - Quando disponível, confirmação de entrega com `ackLevel >= 2`.
 
-**Os bots estão enviando mensagens duplicadas.**
-- Certifique-se de que você rodou via `python3 orchestrator.py` e não iniciou processos `node` manualmente ao mesmo tempo. O arquivo `contacts.json` deve ser único e centralizado.
+4. **No pós-envio**
+   - Bot segue ativo para responder mensagens.
+   - Leads preenchidos são enviados para Google Sheets.
+   - Endpoint de sucesso recebe payload configurado.
 
-## To-Do (Pendências)
-- Tratativa avançada de desconexão forçada (banimento) e auto-reconexão.
-- Lógica para pausar envios automaticamente após detectar alto volume de erros de envio.
+---
+
+## 9) Troubleshooting rápido
+
+### Erro de variáveis de ambiente ausentes
+- Sintoma: processo Node encerra ao iniciar.
+- Verifique e preencha chaves obrigatórias no `.env`.
+
+### Conta autenticou, mas não envia
+- Verifique se há contatos com `sentBy` da conta e `sent=false`.
+- Use comando `stats` para confirmar distribuição.
+
+### Conflito de sessão/browser
+- Evite subir múltiplos `node index.js` manualmente para o mesmo `accountId`.
+- Prefira sempre o fluxo único com `python3 orchestrator.py`.
+
+### Entrega não confirmada
+- ACK depende de retorno do WhatsApp/WebSocket; pode haver envio com `sent=true` sem `delivered=true` imediato.
+
+---
+
+## 10) Boas práticas operacionais
+
+- Execute uma conta por perfil (`accountId`) para evitar colisão de sessão.
+- Mantenha backup de `contacts.json` e monitoramento diário de falhas.
+- Valide periodicamente tokens e credenciais Google (`token.json`, `Tetrakey.json`).
+- Faça testes com poucos contatos antes de lotes grandes.
