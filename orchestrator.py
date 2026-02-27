@@ -35,17 +35,18 @@ ACCOUNTS = [
         'ready': False,
         'consecutive_uses': 0
     },
-    {
-        'id': 'account_2',
-        'name': 'Account 2',
-        'process': None,
-        'authenticated': False,
-        'ready': False,
-        'consecutive_uses': 0
-    }
+    #{
+    #    'id': 'account_2',
+    #    'name': 'Account 2',
+    #    'process': None,
+    #    'authenticated': False,
+    #    'ready': False,
+    #    'consecutive_uses': 0
+    #}
 ]
 
 CONTACTS_FILE = 'contacts.json'
+CONTACTS_BACKUP_FILE = 'contacts.json.prev'
 MAX_CONSECUTIVE_USES = 3
 contacts_lock = threading.Lock()
 authenticated_accounts = []
@@ -150,12 +151,18 @@ def print_header():
 
 def load_contacts():
     """Load contacts from JSON file"""
+    return load_contacts_file(CONTACTS_FILE)
+
+def load_contacts_file(path: str):
+    """Load contacts from a JSON file path."""
     with contacts_lock:
         try:
-            with open(CONTACTS_FILE, 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 return json.load(f)
+        except FileNotFoundError:
+            return []
         except Exception as e:
-            print(f"❌ Error loading {CONTACTS_FILE}: {e}")
+            print(f"❌ Error loading {path}: {e}")
             return []
 
 def save_contacts(contacts):
@@ -174,6 +181,47 @@ def is_error_sent_at(value: Optional[str]) -> bool:
     if not value:
         return False
     return str(value).startswith("ERROR")
+
+def create_contacts_backup() -> bool:
+    """Create a temp backup copy of contacts.json before regeneration."""
+    try:
+        if not os.path.exists(CONTACTS_FILE):
+            return False
+        with open(CONTACTS_FILE, 'r', encoding='utf-8') as source:
+            data = source.read()
+        with open(CONTACTS_BACKUP_FILE, 'w', encoding='utf-8') as backup:
+            backup.write(data)
+        print(f"🗂️  Backed up {CONTACTS_FILE} to {CONTACTS_BACKUP_FILE}")
+        return True
+    except Exception as e:
+        print(f"⚠️  Failed to backup {CONTACTS_FILE}: {e}")
+        return False
+
+def normalize_phone_key(value) -> str:
+    """Normalize a phone number for comparison using only digits."""
+    return "".join(ch for ch in str(value) if ch.isdigit())
+
+def get_delivered_today_phone_keys(contacts, today_str: str):
+    """Return a set of phone keys delivered today based on sentAt."""
+    delivered = set()
+    for contact in contacts:
+        if not contact.get("delivered"):
+            continue
+        sent_at = contact.get("sentAt")
+        if isinstance(sent_at, str) and today_str in sent_at:
+            phone_key = normalize_phone_key(contact.get("phone", ""))
+            if phone_key:
+                delivered.add(phone_key)
+    return delivered
+
+def assign_contacts_round_robin(contacts, account_ids: List[str]):
+    """Assign sentBy to contacts evenly across account_ids."""
+    if not account_ids:
+        return contacts
+    for index, contact in enumerate(contacts):
+        contact["sentBy"] = account_ids[index % len(account_ids)]
+    return contacts
+
 
 def start_bot(account):
     """Start a bot instance for an account (Persistent Mode)"""
@@ -303,6 +351,29 @@ def build_contacts_json_final() -> bool:
             output_path=CONTACTS_FILE,
             account_ids=auth_ids
         )
+        previous_contacts = load_contacts_file(CONTACTS_BACKUP_FILE)
+        if previous_contacts:
+            today_str = datetime.now().date().isoformat()
+            delivered_today = get_delivered_today_phone_keys(previous_contacts, today_str)
+            if delivered_today:
+                current_contacts = load_contacts()
+                filtered_contacts = [
+                    contact for contact in current_contacts
+                    if normalize_phone_key(contact.get("phone", "")) not in delivered_today
+                ]
+                if len(filtered_contacts) != len(current_contacts):
+                    print(f"🧹 Removed {len(current_contacts) - len(filtered_contacts)} contacts delivered today.")
+                current_contacts = filtered_contacts
+                assign_contacts_round_robin(current_contacts, auth_ids)
+                save_contacts(current_contacts)
+            else:
+                current_contacts = load_contacts()
+                assign_contacts_round_robin(current_contacts, auth_ids)
+                save_contacts(current_contacts)
+        else:
+            current_contacts = load_contacts()
+            assign_contacts_round_robin(current_contacts, auth_ids)
+            save_contacts(current_contacts)
         contacts_json_built = True
         print(f"✅ {CONTACTS_FILE} generated successfully!")
         return True
@@ -461,7 +532,7 @@ def monitor_and_commands(accounts):
 
     print("✅ All bots terminated!")
 
-def main():
+def main(tests=False):
     """Main orchestrator function"""
     print_header()
 
@@ -479,6 +550,7 @@ def main():
     # CRITICAL FIX: Clear contacts.json to an empty list.
     # This prevents bots from starting to send messages from a previous run
     # before we have calculated the new distribution.
+    create_contacts_backup()
     print("\n🧹 Clearing contacts.json to prevent premature sending...")
     save_contacts([])
 
@@ -526,11 +598,17 @@ def main():
     stop_bots(processes)
 
     # Generate Contacts with proper sentBy assignment
-    if not build_contacts_json_final():
-        print("❌ Failed to build contacts.json. Exiting.")
-        sys.exit(1)
-
-    # --- PHASE 3: SENDING ---
+    if not tests:
+        if not build_contacts_json_final():
+            print("❌ Failed to build contacts.json. Exiting.")
+            sys.exit(1)
+    else:
+        df_to_contacts_json(
+            df=settings.df,
+            message='default_message',
+            output_path=CONTACTS_FILE,
+            #account_ids='account_1'
+        )    # --- PHASE 3: SENDING ---
     print("\n" + "=" * 60)
     print("🚀 PHASE 3: Starting Bots for Sending Messages")
     print("=" * 60)
@@ -564,4 +642,4 @@ def main():
     print("\n👋 Orchestrator shutting down...")
 
 if __name__ == "__main__":
-    main()
+    main(tests=True)

@@ -6,6 +6,9 @@ DATABASE_OLD = config('DATABASE_OLD')
 USERNAME_OLD = config('DBUSERNAME_OLD')
 PASSWORD_OLD = config('PASSWORD_OLD')
 
+HEADER_KEY = config('HEADER_KEY')
+AUTH_KEY_GENERAL = config('AUTH_KEY_GENERAL')
+
 
 QUERY_CLIENTS_PHONE = """wwwwselect distinct top(100w0)
 	M.MoInadimplentesID,
