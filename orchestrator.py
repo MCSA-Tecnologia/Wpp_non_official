@@ -34,7 +34,7 @@ ACCOUNTS = [
         'authenticated': False,
         'ready': False,
         'consecutive_uses': 0
-    },
+    }
     #{
     #    'id': 'account_2',
     #    'name': 'Account 2',
@@ -47,6 +47,7 @@ ACCOUNTS = [
 
 CONTACTS_FILE = 'contacts.json'
 CONTACTS_BACKUP_FILE = 'contacts.json.prev'
+LOGS_DIR = 'logs'
 MAX_CONSECUTIVE_USES = 3
 contacts_lock = threading.Lock()
 authenticated_accounts = []
@@ -114,6 +115,7 @@ def df_to_contacts_json(
         contacts.append({
             "phone": normalize_phone_br(row["Telefone"]),
             "message": message,
+            "buttonUrl": getattr(settings, 'CONTACT_BUTTON_URL', ''),
             "delay": 30000,
             "sent": False,
             "sentBy": sent_by,
@@ -176,6 +178,50 @@ def save_contacts(contacts):
             print(f"❌ Error saving {CONTACTS_FILE}: {e}")
             return False
 
+def log_sent_messages():
+    """
+    Snapshot the current contacts.json into a timestamped log file under logs/.
+    Each entry preserves the contact fields (phone, message, sent, sentBy,
+    delivered, deliveredAt, ackLevel, sentAt) plus a run-level summary.
+    """
+    contacts = load_contacts()
+    if not contacts:
+        print("⚠️  No contacts to log.")
+        return None
+
+    os.makedirs(LOGS_DIR, exist_ok=True)
+
+    now = datetime.now()
+    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+
+    total = len(contacts)
+    sent = sum(1 for c in contacts if c.get("sent"))
+    errors = sum(1 for c in contacts if is_error_sent_at(c.get("sentAt")))
+    delivered = sum(1 for c in contacts if c.get("delivered"))
+
+    log_entry = {
+        "run_timestamp": now.isoformat(),
+        "summary": {
+            "total": total,
+            "sent": sent,
+            "errors": errors,
+            "delivered": delivered,
+            "accounts_used": list({c.get("sentBy") for c in contacts if c.get("sentBy")}),
+        },
+        "contacts": contacts,
+    }
+
+    log_path = os.path.join(LOGS_DIR, f"run_{timestamp}.json")
+    try:
+        with open(log_path, "w", encoding="utf-8") as f:
+            json.dump(log_entry, f, indent=2, ensure_ascii=False)
+        print(f"📝 Log saved to {log_path}")
+        return log_path
+    except Exception as e:
+        print(f"❌ Error saving log: {e}")
+        return None
+
+
 def is_error_sent_at(value: Optional[str]) -> bool:
     """Return True if sentAt contains an error marker."""
     if not value:
@@ -224,10 +270,11 @@ def assign_contacts_round_robin(contacts, account_ids: List[str]):
 
 
 def start_bot(account):
-    """Start a bot instance for an account (Persistent Mode)"""
+    """Start a bot instance for an account (Persistent Mode, no auto-reply)"""
     try:
-        # We start in persistent mode. 'index.js' will read contacts.json on ready.
-        cmd = ['node', 'index.js', account['id'], CONTACTS_FILE]
+        # Persistent mode so the bot stays alive for the orchestrator to monitor,
+        # but --no-reply disables the chatbot auto-reply listener.
+        cmd = ['node', 'index.js', account['id'], CONTACTS_FILE, 'persistent', '--no-reply']
 
         process = subprocess.Popen(
             cmd,
@@ -404,132 +451,41 @@ def stop_bots(accounts):
 
     print("✅ All bots stopped.")
 
-def monitor_and_commands(accounts):
-    """Main monitoring loop handling user input"""
-    print("\n📝 Commands:")
-    print("  • 'status'    - Show account status")
-    print("  • 'stats'     - Show sending statistics")
-    print("  • 'delivery'  - Show delivery confirmation stats")
-    print("  • 'terminate' - Stop all bots")
-    print("=" * 60)
-    print()
+def wait_for_all_messages_sent(accounts, poll_interval=5):
+    """Poll contacts.json until all messages have been sent, then stop bots."""
+    print("\n⏳ Waiting for all messages to be sent...")
+    print(f"   (polling every {poll_interval}s — press Ctrl+C to abort)\n")
 
     try:
         while True:
-            # Check if any process has died
-            for account in accounts:
-                if account['process'] and account['process'].poll() is not None:
-                    print(f"\n⚠️  {account['name']} has stopped unexpectedly!")
-
-            try:
-                user_input = input().strip().lower()
-
-                if user_input == 'terminate':
-                    stop_bots(accounts)
-                    break
-
-                elif user_input == 'status':
-                    print("\n📊 Account Status:")
-                    print("─" * 60)
-                    for account in accounts:
-                        auth_status = "🟢 Authenticated" if account['authenticated'] else "🔴 Not Authenticated"
-                        running = "Running" if (account['process'] and account['process'].poll() is None) else "Stopped"
-                        consecutive = account['consecutive_uses']
-                        print(f"  {account['name']}: {auth_status} | {running} | Consecutive: {consecutive}/3")
-                    print("─" * 60)
-                    print()
-
-                elif user_input == 'stats':
-                    contacts = load_contacts()
-                    total = len(contacts)
-                    sent = len([c for c in contacts if c.get('sent', False)])
-                    unsent = total - sent
-                    errors = len([c for c in contacts if is_error_sent_at(c.get('sentAt'))])
-                    sent_success = len([
-                        c for c in contacts
-                        if c.get('sent', False)
-                        and not is_error_sent_at(c.get('sentAt'))
-                    ])
-
-                    print("\n📊 Sending Statistics:")
-                    print("─" * 60)
-                    print(f"  Total contacts: {total}")
-                    print(f"  Sent successfully: {sent_success}")
-                    print(f"  Failed (errors): {errors}")
-                    print(f"  Unsent: {unsent}")
-                    print(f"  Authenticated accounts: {len(authenticated_accounts)}")
-
-                    # Show breakdown by account
-                    by_account = {}
-                    error_by_account = {}
-                    for c in contacts:
-                        if c.get('sent') and c.get('sentBy'):
-                            if is_error_sent_at(c.get('sentAt')):
-                                error_by_account[c['sentBy']] = error_by_account.get(c['sentBy'], 0) + 1
-                            else:
-                                by_account[c['sentBy']] = by_account.get(c['sentBy'], 0) + 1
-
-                    if by_account:
-                        print("\n  Successfully sent by account:")
-                        for acc_id, count in by_account.items():
-                            print(f"    - {acc_id}: {count}")
-
-                    if error_by_account:
-                        print("\n  Errors by account:")
-                        for acc_id, count in error_by_account.items():
-                            print(f"    - {acc_id}: {count}")
-                    print("─" * 60)
-                    print()
-
-                elif user_input == 'delivery':
-                    contacts = load_contacts()
-                    total = len(contacts)
-                    sent = len([c for c in contacts if c.get('sent', False)])
-                    delivered = len([c for c in contacts if c.get('delivered', False)])
-                    read = len([c for c in contacts if c.get('ackLevel') == 3])
-                    played = len([c for c in contacts if c.get('ackLevel') == 4])
-
-                    print("\n📊 Delivery Confirmation Statistics:")
-                    print("─" * 60)
-                    print(f"  Total contacts: {total}")
-                    print(f"  Sent: {sent}")
-                    print(f"  Delivered (✓✓): {delivered}")
-                    print(f"  Read (✓✓✓): {read}")
-                    print(f"  Played (voice/video): {played}")
-                    
-                    if sent > 0:
-                        delivery_rate = (delivered / sent) * 100
-                        print(f"\n  Delivery rate: {delivery_rate:.1f}%")
-                        
-                        if read > 0:
-                            read_rate = (read / sent) * 100
-                            print(f"  Read rate: {read_rate:.1f}%")
-
-                    # Show breakdown by account
-                    by_account_delivery = {}
-                    for c in contacts:
-                        if c.get('delivered') and c.get('sentBy'):
-                            by_account_delivery[c['sentBy']] = by_account_delivery.get(c['sentBy'], 0) + 1
-
-                    if by_account_delivery:
-                        print("\n  Deliveries confirmed by account:")
-                        for acc_id, count in by_account_delivery.items():
-                            print(f"    - {acc_id}: {count}")
-                    print("─" * 60)
-                    print()
-
-                elif user_input:
-                    print(f"⚠️  Unknown command: '{user_input}'")
-                    print("Valid commands: status, stats, delivery, terminate")
-                    print()
-
-            except EOFError:
+            alive = [acc for acc in accounts if acc['process'] and acc['process'].poll() is None]
+            if not alive:
+                print("\n⚠️  All bot processes have exited.")
                 break
 
-    except KeyboardInterrupt:
-        print("\n\n⚠️  Ctrl+C detected. Terminating all bots...")
-        stop_bots(accounts)
+            contacts = load_contacts()
+            total = len(contacts)
+            if total == 0:
+                print("⚠️  contacts.json is empty. Nothing to send.")
+                break
 
+            sent = sum(1 for c in contacts if c.get('sent', False))
+            errors = sum(1 for c in contacts if is_error_sent_at(c.get('sentAt')))
+            sent_ok = sent - errors
+            unsent = total - sent
+
+            print(f"   📊 {sent}/{total} processed  |  ✅ {sent_ok} sent  |  ❌ {errors} errors  |  ⏳ {unsent} remaining")
+
+            if unsent == 0:
+                print(f"\n✅ All {total} messages processed!")
+                break
+
+            time.sleep(poll_interval)
+
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Ctrl+C detected.")
+
+    stop_bots(accounts)
     print("✅ All bots terminated!")
 
 def main(tests=False):
@@ -634,10 +590,12 @@ def main(tests=False):
             print(f"❌ Failed to restart {account['name']}")
 
     print("\n✅ Bots are running and processing messages...")
-    print("💡 Delivery confirmations will be tracked automatically via MESSAGE_ACK events")
 
-    # Run Monitor Loop
-    monitor_and_commands(ACCOUNTS)
+    # Wait until all messages are sent, then terminate
+    wait_for_all_messages_sent(ACCOUNTS)
+
+    # Log the final state of all contacts
+    log_sent_messages()
 
     print("\n👋 Orchestrator shutting down...")
 

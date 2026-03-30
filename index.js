@@ -36,6 +36,7 @@ loadEnv();
 const accountId = process.argv[2] || 'default';
 const contactsFile = process.argv[3] || 'contacts.json';
 const mode = process.argv[4] || 'persistent'; // 'persistent' or 'oneshot'
+const noReply = process.argv.includes('--no-reply');
 
 const isOneShotMode = mode === 'oneshot';
 
@@ -349,7 +350,8 @@ async function sendMessagesAndExit() {
         try {
             const chatId = contact.phone.replace('+', '') + '@c.us';
             console.log(`[${accountId}] 📤 Sending to ${contact.phone}...`);
-            const sentMessage = await client.sendMessage(chatId, contact.message);
+            const fullMessage = contact.buttonUrl ? contact.message + '\n\n' + contact.buttonUrl : contact.message;
+            const sentMessage = await client.sendMessage(chatId, fullMessage);
             markContactAsSent(contact.phone, true);
             const ack = await waitForDelivery(client, sentMessage);
             if (ack !== null && ack >= 2) {
@@ -388,7 +390,8 @@ async function sendMessagesAndStayAlive() {
         try {
             const chatId = contact.phone.replace('+', '') + '@c.us';
             console.log(`[${accountId}] 📤 Sending to ${contact.phone}...`);
-            const sentMessage = await client.sendMessage(chatId, contact.message);
+            const fullMessage = contact.buttonUrl ? contact.message + '\n\n' + contact.buttonUrl : contact.message;
+            const sentMessage = await client.sendMessage(chatId, fullMessage);
             markContactAsSent(contact.phone, true);
             const ack = await waitForDelivery(client, sentMessage);
             if (ack !== null && ack >= 2) {
@@ -451,7 +454,7 @@ client.on('authenticated', () => console.log(`[${accountId}] ✅ Authenticated s
 
 client.on('disconnected', (reason) => console.log(`[${accountId}] Disconnected:`, reason));
 
-if (!isOneShotMode) {
+if (!isOneShotMode && !noReply) {
     const leadCapture = new Map();
     const MAX_WRONG_ANSWERS = 3;
 

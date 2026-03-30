@@ -1,13 +1,1 @@
-[
-  {
-    "phone": "+5531991376705",
-    "message": "default_message",
-    "delay": 30000,
-    "sent": true,
-    "sentBy": "account_1",
-    "delivered": false,
-    "deliveredAt": null,
-    "ackLevel": null,
-    "sentAt": "2026-02-27T12:58:20.223Z"
-  }
-]
+[]

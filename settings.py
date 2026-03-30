@@ -43,6 +43,8 @@ group by
 	PC.PesDDD + PC.PesTelefone
 order by 5 asc, 4 desc"""
 
+CONTACT_BUTTON_URL = "https://wa.me/55318009419333"
+
 CONTACT_MESSAGE = ("""SABOOORRRR… SEM DÍVIDA!
 Imagina o gosto de ver tudo resolvido…🤔
  
@@ -55,8 +57,8 @@ Garanta essa oferta somente essa semana!!""")
 
 df = pd.DataFrame(
     [
-        ["31991376705", 0, True],
-        #["41 9723-3448", 0, False],
+        #["31991376705", 0, True],
+        ["41 9723-3448", 0, False],
     ],
     columns=["Telefone", "col2", "col3"]
 )
