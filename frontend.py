@@ -10,6 +10,7 @@ import threading
 import re
 import time
 import gradio as gr
+import pandas as pd
 
 import orchestrator
 
@@ -78,7 +79,7 @@ class OrchestratorRunner:
         self.account_count = 1
         self.lock = threading.Lock()
 
-    def start(self, count: int):
+    def start(self, count: int, message: str = "", csv_path: str = ""):
         self.running = True
         self.account_count = count
         self.general_log = ""
@@ -90,12 +91,30 @@ class OrchestratorRunner:
         orchestrator.authenticated_accounts.clear()
         orchestrator.contacts_json_built = False
         orchestrator.pending_contacts_df = None
+        orchestrator.message_variants.clear()
+        orchestrator.csv_contacts_df = None
+
+        # Load CSV if provided — columns: Nome, Telefone
+        if csv_path:
+            try:
+                df = pd.read_csv(csv_path, dtype=str)
+                # Normalise column names (strip whitespace, title-case)
+                df.columns = [c.strip().title() for c in df.columns]
+                if "Telefone" not in df.columns:
+                    self._route_line("ERROR: CSV must have a 'Telefone' column.\n")
+                else:
+                    orchestrator.csv_contacts_df = df
+                    self._route_line(f"CSV loaded: {len(df)} contact(s)\n")
+            except Exception as e:
+                self._route_line(f"ERROR loading CSV: {e}\n")
+
+        custom_msg = message.strip() if message and message.strip() else None
 
         # Redirect stdout so we capture all print() output from orchestrator
         original_stdout = sys.stdout
         sys.stdout = _TeeWriter(self, original_stdout)
         try:
-            orchestrator.main()
+            orchestrator.main(custom_message=custom_msg)
         except SystemExit:
             pass  # orchestrator calls sys.exit on failure; absorb it
         except Exception as e:
@@ -140,20 +159,21 @@ def on_account_count_change(count_str):
     updates = []
     for i in range(1, MAX_ACCOUNTS + 1):
         if i <= count:
-            updates.append(gr.update(visible=True, value="", label=f"Account {i}  (account_{i})"))
+            updates.append(gr.update(visible=True, value="", label=f"Chip {i}"))
         else:
             updates.append(gr.update(visible=False, value=""))
     return updates
 
 
-def run_orchestrator(count_str):
+def run_orchestrator(count_str, message_text, csv_file):
     count = int(count_str)
+    csv_path = csv_file if csv_file else ""
 
     if runner.running:
         yield _build_outputs("Orchestrator is already running.\n", _empty_logs(count), count, running=True)
         return
 
-    t = threading.Thread(target=runner.start, args=(count,), daemon=True)
+    t = threading.Thread(target=runner.start, args=(count, message_text, csv_path), daemon=True)
     t.start()
 
     while runner.running or t.is_alive():
@@ -214,6 +234,22 @@ def build_ui():
         gr.Markdown("# WhatsApp Multi-Account Orchestrator")
 
         with gr.Row():
+            message_input = gr.Textbox(
+                label="Mensagem",
+                placeholder="Digite a mensagem base aqui... (deixe vazio para usar a mensagem padrão do settings.py)\nUse NOME_DO_CLIENTE para personalizar com o primeiro nome do CSV.",
+                lines=6,
+                max_lines=6,
+                interactive=True,
+                scale=3,
+            )
+            csv_upload = gr.File(
+                label="CSV de Contatos (Nome, Telefone)",
+                file_types=[".csv"],
+                type="filepath",
+                scale=1,
+            )
+
+        with gr.Row():
             account_dropdown = gr.Dropdown(
                 choices=["1", "2", "3", "4", "5", "6"],
                 value=str(initial_count),
@@ -260,7 +296,7 @@ def build_ui():
 
         run_btn.click(
             fn=run_orchestrator,
-            inputs=[account_dropdown],
+            inputs=[account_dropdown, message_input, csv_upload],
             outputs=all_outputs,
         )
 
@@ -279,4 +315,4 @@ def build_ui():
 
 if __name__ == "__main__":
     demo = build_ui()
-    demo.launch(share=False)
+    demo.launch(share=False, server_port=4778)

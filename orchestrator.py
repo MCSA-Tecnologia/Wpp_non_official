@@ -49,11 +49,15 @@ CONTACTS_FILE = 'contacts.json'
 CONTACTS_BACKUP_FILE = 'contacts.json.prev'
 LOGS_DIR = 'logs'
 MAX_CONSECUTIVE_USES = 3
+MESSAGE_VARIANTS_COUNT = 15
 contacts_lock = threading.Lock()
 authenticated_accounts = []
 
+# Message variants array – populated by generate_message_variants() before sending
+message_variants: List[str] = []
 
 pending_contacts_df: Optional[pd.DataFrame] = None
+csv_contacts_df: Optional[pd.DataFrame] = None  # CSV override from frontend
 contacts_json_built = False
 
 def fetch_negociador_df() -> Optional[pd.DataFrame]:
@@ -78,6 +82,18 @@ def fetch_negociador_df() -> Optional[pd.DataFrame]:
         df = settings.df
         print(df.iloc[0])
         return df
+
+
+def generate_message_variants(base_message: str, count: int = MESSAGE_VARIANTS_COUNT) -> List[str]:
+    """
+    Build an array of *count* message variants from a base message.
+    Currently appends +i to each variant (placeholder logic).
+    Replace the body of this function with real variation logic later.
+    """
+    global message_variants
+    message_variants = [f"{base_message}+{i}" for i in range(count)]
+    print(f"📝 Generated {len(message_variants)} message variant(s)")
+    return message_variants
 
 
 def df_to_contacts_json(
@@ -106,22 +122,33 @@ def df_to_contacts_json(
         return f"+55{digits}"
 
     normalized_accounts: List[str] = list(account_ids or authenticated_accounts)
+    # Use the pre-built message_variants array if available, otherwise single message
+    variants = message_variants if message_variants else [message]
+    has_nome = "Nome" in df.columns
     contacts = []
     for index, row in df.iterrows():
         sent_by = None
         if normalized_accounts:
             # Alternate between accounts
             sent_by = normalized_accounts[index % len(normalized_accounts)]
+        # Cycle through message variants: contact 0 → variant 0, contact 1 → variant 1, ...
+        contact_message = variants[index % len(variants)]
+        # Replace NOME_DO_CLIENTE with first name from CSV (if available)
+        if has_nome and "NOME_DO_CLIENTE" in contact_message:
+            full_name = str(row["Nome"]).strip()
+            first_name = full_name.split()[0] if full_name else ""
+            contact_message = contact_message.replace("NOME_DO_CLIENTE", first_name)
+            print(contact_message)
         contacts.append({
             "phone": normalize_phone_br(row["Telefone"]),
-            "message": message,
+            "message": contact_message,
             "buttonUrl": getattr(settings, 'CONTACT_BUTTON_URL', ''),
             "delay": 30000,
             "sent": False,
             "sentBy": sent_by,
-            "delivered": False,      # NEW: Track if message was delivered
-            "deliveredAt": None,     # NEW: Timestamp when delivered
-            "ackLevel": None,        # NEW: WhatsApp ack level (2=delivered, 3=read, 4=played)
+            "delivered": False,
+            "deliveredAt": None,
+            "ackLevel": None,
             "sentAt": None
         })
 
@@ -368,7 +395,7 @@ def check_files():
         return False
     return True
 
-def build_contacts_json_final() -> bool:
+def build_contacts_json_final(custom_message: Optional[str] = None) -> bool:
     """
     After authentication, we know which accounts are authenticated.
     Generate contacts.json properly assigned to those accounts.
@@ -391,15 +418,20 @@ def build_contacts_json_final() -> bool:
 
     default_message = getattr(settings.CONTACT_MESSAGE, 'DEFAULT_MESSAGE', settings.CONTACT_MESSAGE)
 
+    # Build message variants from the base message (or override)
+    base_msg = custom_message if custom_message else default_message
+    generate_message_variants(base_msg)
+
     try:
         df_to_contacts_json(
             df=pending_contacts_df,
-            message=default_message,
+            message=base_msg,
             output_path=CONTACTS_FILE,
             account_ids=auth_ids
         )
+        # Skip dedup when CSV was uploaded — CSV contacts have priority
         previous_contacts = load_contacts_file(CONTACTS_BACKUP_FILE)
-        if previous_contacts:
+        if previous_contacts and csv_contacts_df is None:
             today_str = datetime.now().date().isoformat()
             delivered_today = get_delivered_today_phone_keys(previous_contacts, today_str)
             if delivered_today:
@@ -488,12 +520,17 @@ def wait_for_all_messages_sent(accounts, poll_interval=5):
     stop_bots(accounts)
     print("✅ All bots terminated!")
 
-def main(tests=False):
+def main(tests=False, custom_message: Optional[str] = None):
     """Main orchestrator function"""
     print_header()
 
     global pending_contacts_df
-    pending_contacts_df = fetch_negociador_df()
+    # CSV upload from frontend takes priority over the DB query
+    if csv_contacts_df is not None and not csv_contacts_df.empty:
+        pending_contacts_df = csv_contacts_df
+        print(f"📂 Using CSV upload: {len(pending_contacts_df)} contact(s)")
+    else:
+        pending_contacts_df = fetch_negociador_df()
 
     if not check_files():
         sys.exit(1)
@@ -555,13 +592,15 @@ def main(tests=False):
 
     # Generate Contacts with proper sentBy assignment
     if not tests:
-        if not build_contacts_json_final():
+        if not build_contacts_json_final(custom_message=custom_message):
             print("❌ Failed to build contacts.json. Exiting.")
             sys.exit(1)
     else:
+        base_msg = custom_message if custom_message else settings.CONTACT_MESSAGE
+        generate_message_variants(base_msg)
         df_to_contacts_json(
             df=settings.df,
-            message='default_message',
+            message=base_msg,
             output_path=CONTACTS_FILE,
             #account_ids='account_1'
         )    # --- PHASE 3: SENDING ---
@@ -599,5 +638,61 @@ def main(tests=False):
 
     print("\n👋 Orchestrator shutting down...")
 
+def cli():
+    """
+    CLI entry point for automation.
+    Usage:
+        python orchestrator.py --chips 2 --message "Hello NOME_DO_CLIENTE" --csv contacts.csv
+        python orchestrator.py --chips 1                          # uses defaults from settings.py
+        python orchestrator.py                                    # uses current ACCOUNTS + settings defaults
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="WhatsApp Multi-Account Orchestrator CLI")
+    parser.add_argument("--chips", type=int, default=None,
+                        help="Number of accounts/chips (1-6). Omit to use ACCOUNTS as defined in code.")
+    parser.add_argument("--message", type=str, default=None,
+                        help="Base message to send. Omit to use settings.CONTACT_MESSAGE.")
+    parser.add_argument("--csv", type=str, default=None,
+                        help="Path to CSV file (columns: Nome, Telefone). Omit to use DB query.")
+    parser.add_argument("--test", action="store_true",
+                        help="Run in test mode (uses settings.df instead of DB).")
+    args = parser.parse_args()
+
+    # Setup accounts from --chips
+    if args.chips is not None:
+        if not 1 <= args.chips <= 6:
+            print("❌ --chips must be between 1 and 6")
+            sys.exit(1)
+        ACCOUNTS.clear()
+        for i in range(1, args.chips + 1):
+            ACCOUNTS.append({
+                'id': f'account_{i}',
+                'name': f'Account {i}',
+                'process': None,
+                'authenticated': False,
+                'ready': False,
+                'consecutive_uses': 0,
+            })
+        print(f"📱 Configured {args.chips} account(s)")
+
+    # Load CSV if provided
+    global csv_contacts_df
+    if args.csv:
+        try:
+            df = pd.read_csv(args.csv, dtype=str)
+            df.columns = [c.strip().title() for c in df.columns]
+            if "Telefone" not in df.columns:
+                print("❌ CSV must have a 'Telefone' column")
+                sys.exit(1)
+            csv_contacts_df = df
+            print(f"📂 CSV loaded: {len(df)} contact(s)")
+        except Exception as e:
+            print(f"❌ Error loading CSV: {e}")
+            sys.exit(1)
+
+    main(tests=args.test, custom_message=args.message)
+
+
 if __name__ == "__main__":
-    main(tests=True)
+    cli()

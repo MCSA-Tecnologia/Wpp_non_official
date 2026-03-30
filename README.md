@@ -5,6 +5,8 @@ Orquestrador de disparo de mensagens no WhatsApp com múltiplas contas, distribu
 Este projeto combina:
 - **Python (`orchestrator.py`)** para coordenar autenticação, geração de contatos e ciclo de execução.
 - **Node.js (`index.js`)** para conectar no WhatsApp Web, enviar mensagens, confirmar entrega e atender respostas.
+- **Gradio (`frontend.py`)** para interface web com controle visual de contas, mensagem e upload de CSV.
+- **CLI (`orchestrator.py --chips ...`)** para automação via terminal/scripts.
 
 ---
 
@@ -12,22 +14,38 @@ Este projeto combina:
 
 ### Componentes principais
 
-1. **`orchestrator.py` (controle central)**
-   - Busca contatos no banco de dados.
-   - Inicia instâncias Node por conta (ex.: `account_1`, `account_2`).
+1. **`orchestrator.py` (controle central + CLI)**
+   - Busca contatos no banco de dados ou de um CSV enviado pelo usuário.
+   - Inicia instâncias Node por conta (ex.: `account_1` a `account_6`).
    - Aguarda autenticação das contas via QR Code.
+   - Gera variantes de mensagem (`+0` a `+14`) e distribui ciclicamente entre contatos.
+   - Suporta personalização com `NOME_DO_CLIENTE` (substituído pelo primeiro nome do CSV).
    - Gera/atualiza `contacts.json` com distribuição por conta (`sentBy`).
    - Reinicia os bots para envio e monitoramento.
+   - Salva log de cada execução em `logs/run_<timestamp>.json`.
+   - Modo CLI para automação via terminal.
 
-2. **`index.js` (bot por conta)**
+2. **`frontend.py` (interface Gradio)**
+   - Interface web para controle visual do orquestrador.
+   - Campo de mensagem com suporte a `NOME_DO_CLIENTE`.
+   - Upload de CSV de contatos (Nome, Telefone).
+   - Dropdown para selecionar número de chips/contas (1–6).
+   - Displays em tempo real por conta (QR code, logs de envio).
+   - Botões Run/Stop com desabilitação durante execução.
+
+3. **`index.js` (bot por conta)**
    - Faz login com sessão local (`LocalAuth`) por `accountId`.
    - Envia somente os contatos atribuídos à conta atual.
    - Atualiza status de envio (`sent`, `sentAt`) e entrega (`delivered`, `ackLevel`, `deliveredAt`).
-   - Mantém auto-resposta ativa para capturar CPF/CNPJ + e-mail.
+   - Flag `--no-reply` desabilita auto-resposta quando executado pelo orquestrador.
+   - Auto-resposta ativa (modo standalone) para capturar CPF/CNPJ + e-mail.
 
-3. **`contacts.json` (fila de envios)**
+4. **`contacts.json` (fila de envios)**
    - Arquivo intermediário compartilhado entre Python e Node.
    - Define mensagem, telefone, atraso e conta responsável (`sentBy`).
+
+5. **`logs/` (histórico de execuções)**
+   - Um arquivo JSON por execução com timestamp, resumo e todos os contatos.
 
 ---
 
@@ -43,18 +61,18 @@ O `orchestrator.py` executa um fluxo em 3 fases para reduzir conflitos de browse
 
 ### Fase 2 — Preparação e distribuição
 - Para os bots para liberar recursos/processos.
-- Busca contatos do banco SQL Server.
-- Converte os dados para `contacts.json`.
+- Busca contatos do banco SQL Server **ou** usa CSV enviado pelo usuário (CSV tem prioridade).
+- Gera 15 variantes da mensagem base (`mensagem+0` a `mensagem+14`).
+- Converte os dados para `contacts.json`, atribuindo variantes ciclicamente.
+- Se a mensagem contém `NOME_DO_CLIENTE`, substitui pelo primeiro nome de cada contato (coluna `Nome` do CSV).
 - Distribui os contatos entre contas autenticadas em round-robin.
-- Remove contatos já entregues no mesmo dia (com base no backup `contacts.json.prev`) para reduzir duplicidade.
+- Remove contatos já entregues no mesmo dia (com base no backup `contacts.json.prev`), exceto quando CSV é usado.
 
 ### Fase 3 — Envio e monitoramento
-- Reinicia os bots com sessões já autenticadas.
+- Reinicia os bots com sessões já autenticadas e flag `--no-reply`.
 - Cada conta envia apenas contatos com `sentBy == accountId`.
-- O bot permanece ativo para:
-  - confirmar ACK de entrega/leitura;
-  - responder mensagens recebidas;
-  - capturar leads (CPF/CNPJ + e-mail) e registrar no Google Sheets.
+- O bot confirma ACK de entrega/leitura.
+- Ao final, salva log completo em `logs/run_<timestamp>.json`.
 
 ---
 
@@ -71,7 +89,7 @@ Instalação de dependências:
 
 ```bash
 npm install whatsapp-web.js qrcode-terminal axios googleapis
-pip install pandas pyodbc
+pip install pandas pyodbc python-decouple gradio
 ```
 
 ---
@@ -152,15 +170,20 @@ Exemplo gerado pelo orquestrador:
 - Retorna `DataFrame` com contatos.
 - Em falha, usa fallback `settings.df`.
 
+### `generate_message_variants(base_message, count=15)`
+- Gera array de variantes da mensagem (`mensagem+0` a `mensagem+14`).
+- Função placeholder — substituir corpo por lógica de variação real futuramente.
+
 ### `df_to_contacts_json(df, message, output_path, account_ids)`
 - Valida presença da coluna `Telefone`.
 - Normaliza números para formato com `+55` quando necessário.
-- Monta lista de contatos com campos de rastreio de envio/entrega.
+- Atribui variantes de mensagem ciclicamente entre contatos.
+- Se `Nome` presente no DataFrame e mensagem contém `NOME_DO_CLIENTE`, substitui pelo primeiro nome.
 - Distribui `sentBy` alternando entre `account_ids`.
 - Salva JSON formatado.
 
 ### `start_bot(account)`
-- Executa `node index.js <account_id> contacts.json` em subprocesso.
+- Executa `node index.js <account_id> contacts.json persistent --no-reply` em subprocesso.
 - Redireciona logs para monitoramento no terminal do orquestrador.
 
 ### `monitor_authentication(process, account)`
@@ -173,21 +196,24 @@ Exemplo gerado pelo orquestrador:
 - Timeout padrão de 120s.
 - Em timeout, lista contas autenticadas e não autenticadas.
 
-### `build_contacts_json_final()`
+### `build_contacts_json_final(custom_message=None)`
 - Gera `contacts.json` final somente após autenticação.
+- Usa mensagem customizada se fornecida, senão `settings.CONTACT_MESSAGE`.
+- Gera variantes de mensagem antes de montar contatos.
 - Reaplica distribuição round-robin entre contas válidas.
-- Remove contatos já entregues no dia atual (se existir backup prévio).
+- Remove contatos já entregues no dia atual (se existir backup prévio), exceto quando CSV é usado.
 
-### `monitor_and_commands(accounts)`
-Loop de comandos interativos:
-- `status`: estado das contas.
-- `stats`: totais, enviados, pendentes e erros por conta.
-- `delivery`: métricas de entrega/leitura.
-- `terminate`: encerra tudo com segurança.
+### `log_sent_messages()`
+- Captura estado final do `contacts.json` após envio.
+- Salva em `logs/run_<timestamp>.json` com resumo (total, enviados, erros, entregues, contas usadas).
 
-### `main()`
+### `main(tests=False, custom_message=None)`
 - Executa as 3 fases (autenticação → preparação → envio).
-- Mantém o processo vivo para monitoramento e auto-resposta.
+- Aceita mensagem customizada e usa CSV de contatos se disponível.
+- Salva log ao final da execução.
+
+### `cli()`
+- Entry point CLI com `argparse`. Veja seção 7.2 abaixo.
 
 ---
 
@@ -223,42 +249,88 @@ Loop de comandos interativos:
 ### `sendMessagesAndExit()`
 - Fluxo one-shot: envia e finaliza processo.
 
-### `client.on('message_create', ...)`
+### `client.on('message_create', ...)` (somente sem `--no-reply`)
 - Fluxo de captura de lead:
   1. solicita/valida CPF ou CNPJ;
   2. solicita e-mail;
   3. registra em Google Sheets;
   4. reporta sucesso em endpoint externo.
+- Desabilitado quando o bot é iniciado com flag `--no-reply` (padrão do orquestrador).
 
 ---
 
-## 7) Como rodar o programa (passo a passo)
+## 7) Como rodar o programa
 
-## 7.1 Execução recomendada (orquestrador)
-
-1. Instale dependências:
-   ```bash
-   npm install whatsapp-web.js qrcode-terminal axios googleapis
-   pip install pandas pyodbc
-   ```
-2. Configure `.env` e `settings.py`.
-3. Inicie o orquestrador:
-   ```bash
-   python3 orchestrator.py
-   ```
-4. Escaneie o QR Code de cada conta solicitada.
-5. Aguarde conclusão das fases automaticamente.
-6. Use comandos no terminal para acompanhar (`status`, `stats`, `delivery`, `terminate`).
-
-## 7.2 Execução de depuração (conta única)
+### 7.1 Interface Web (Gradio)
 
 ```bash
-node index.js account_1 contacts.json
+python frontend.py
 ```
 
-Para modo one-shot:
+Abre em `http://localhost:7860`. Na interface:
+
+1. **(Opcional)** Escreva a mensagem no campo **Mensagem**. Deixe vazio para usar `settings.CONTACT_MESSAGE`.
+   - Use `NOME_DO_CLIENTE` na mensagem para personalizar com o primeiro nome do CSV.
+2. **(Opcional)** Faça upload de um **CSV** com colunas `Nome` e `Telefone`. Sem CSV, usa query do banco.
+3. Selecione o **Número de Chips** (1–6).
+4. Clique em **Run Disparos**.
+5. Escaneie os QR Codes exibidos nos painéis de cada conta.
+6. Acompanhe o progresso em tempo real. Use **Stop** para interromper.
+
+### 7.2 CLI (automação via terminal)
 
 ```bash
+python orchestrator.py [opções]
+```
+
+**Argumentos:**
+
+| Flag | Tipo | Obrigatório | Descrição |
+|------|------|:-----------:|-----------|
+| `--test` | flag | Não | Modo teste (usa `settings.df` em vez do banco) |
+| `--chips N` | int (1–6) | Não | Número de contas. Omitir usa `ACCOUNTS` do código |
+| `--message "..."` | string | Não | Mensagem base. Omitir usa `settings.CONTACT_MESSAGE` |
+| `--csv path` | string | Não | Caminho do CSV (colunas: `Nome`, `Telefone`). Omitir usa query do banco |
+
+**Exemplos:**
+
+```bash
+# Produção: 3 chips, mensagem personalizada, contatos de CSV
+python orchestrator.py --chips 3 --message "Oi NOME_DO_CLIENTE, temos uma oferta!" --csv contatos.csv
+
+# Produção: 2 chips, mensagem e contatos do banco (defaults)
+python orchestrator.py --chips 2
+
+# Produção: tudo default (ACCOUNTS do código + banco + settings.CONTACT_MESSAGE)
+python orchestrator.py
+
+# Teste: 1 chip, usa settings.df como contatos
+python orchestrator.py --test --chips 1
+```
+
+### 7.3 CSV de contatos — formato esperado
+
+```csv
+Nome,Telefone
+Jon Doe,31991376705
+Jessie J,4197233448
+Mister X,3198347777
+```
+
+- **`Telefone`** (obrigatório): número do celular. Normalizado automaticamente para `+55...`.
+- **`Nome`** (opcional): usado para substituir `NOME_DO_CLIENTE` na mensagem (apenas primeiro nome).
+- Quando CSV é fornecido, a deduplicação de contatos já enviados no dia é **desabilitada** (CSV tem prioridade).
+
+### 7.4 Execução direta do bot (depuração)
+
+```bash
+# Modo persistente com auto-resposta
+node index.js account_1 contacts.json
+
+# Modo persistente sem auto-resposta (como o orquestrador usa)
+node index.js account_1 contacts.json persistent --no-reply
+
+# Modo one-shot (envia e encerra)
 node index.js account_1 contacts.json oneshot
 ```
 
@@ -269,12 +341,13 @@ node index.js account_1 contacts.json oneshot
 Ao executar corretamente, você deve observar:
 
 1. **Na autenticação**
-   - Logs de QR code.
+   - Logs de QR code (escaneáveis no painel da interface ou no terminal).
    - Mensagem `Authenticated successfully` / `Client is ready`.
 
 2. **Na preparação**
-   - Geração do `contacts.json` com distribuição por `sentBy`.
-   - Possível remoção de contatos já entregues no dia.
+   - `Generated 15 message variant(s)` — variantes da mensagem criadas.
+   - Geração do `contacts.json` com distribuição por `sentBy` e variantes cíclicas.
+   - Possível remoção de contatos já entregues no dia (somente sem CSV).
 
 3. **No envio**
    - Logs de envio por número.
@@ -282,9 +355,24 @@ Ao executar corretamente, você deve observar:
    - Quando disponível, confirmação de entrega com `ackLevel >= 2`.
 
 4. **No pós-envio**
-   - Bot segue ativo para responder mensagens.
-   - Leads preenchidos são enviados para Google Sheets.
-   - Endpoint de sucesso recebe payload configurado.
+   - Log salvo em `logs/run_<timestamp>.json`.
+   - Bots encerrados automaticamente.
+
+### Estrutura do log (`logs/run_*.json`)
+
+```json
+{
+  "run_timestamp": "2026-03-30T14:25:00.123456",
+  "summary": {
+    "total": 100,
+    "sent": 95,
+    "errors": 3,
+    "delivered": 80,
+    "accounts_used": ["account_1", "account_2"]
+  },
+  "contacts": [ ... ]
+}
+```
 
 ---
 

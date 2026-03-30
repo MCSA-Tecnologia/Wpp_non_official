@@ -43,22 +43,17 @@ group by
 	PC.PesDDD + PC.PesTelefone
 order by 5 asc, 4 desc"""
 
-CONTACT_BUTTON_URL = "https://wa.me/55318009419333"
+CONTACT_BUTTON_URL = "https://wa.me/55318009419333?text=Oi%20quero%20regularizar%20minha%20dívida!"
 
-CONTACT_MESSAGE = ("""SABOOORRRR… SEM DÍVIDA!
-Imagina o gosto de ver tudo resolvido…🤔
- 
-Aqui na Construtora Tenda você pode incluir as parcelas vencidas + a vencer em um só acordo.
- 
-E pra fechar com chave de ouro:
-💰 Entrada facilitada de R$150
- 
-Garanta essa oferta somente essa semana!!""")
+CONTACT_MESSAGE = ("""Bom dia NOME_DO_CLIENTE, 
+constatamos que há uma dívida aberta no seu nome.
+Entre em contato para regularizar a situação.
+
+MCSA - Marcelo Candiotto Sociedade de advogados""")
 
 df = pd.DataFrame(
     [
-        #["31991376705", 0, True],
-        ["41 9723-3448", 0, False],
+        ["31 9137-6705", 0, True]
     ],
     columns=["Telefone", "col2", "col3"]
 )

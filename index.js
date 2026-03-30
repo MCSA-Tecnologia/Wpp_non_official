@@ -410,7 +410,7 @@ async function sendMessagesAndStayAlive() {
             markContactAsSent(contact.phone, false, error);
         }
     }
-    console.log(`\n[${accountId}] ✅ All assigned messages sent! Listening for replies...\n`);
+    console.log(`\n[${accountId}] ✅✅✅✅✅ All assigned messages sent! ✅✅✅✅✅ \n`);
 }
 
 client.on('ready', async () => {

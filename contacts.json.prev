@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "phone": "+5531991376705",
+    "message": "Master creeks and rollings+0",
+    "buttonUrl": "https://wa.me/55318009419333",
+    "delay": 30000,
+    "sent": true,
+    "sentBy": "account_1",
+    "delivered": false,
+    "deliveredAt": null,
+    "ackLevel": null,
+    "sentAt": "2026-03-30T17:27:37.794Z"
+  }
+]
