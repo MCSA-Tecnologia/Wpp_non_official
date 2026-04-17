@@ -9,11 +9,13 @@ import sys
 import threading
 import re
 import time
+from pathlib import Path
 import gradio as gr
 import pandas as pd
 import pyodbc
 
 import orchestrator
+import ro_service
 import settings
 
 MAX_ACCOUNTS = 6
@@ -87,6 +89,43 @@ def fetch_credor_campanha_data():
     return mapping
 
 
+def load_contacts_input_file(file_path: str) -> pd.DataFrame:
+    """
+    Load contact input from CSV or Excel.
+
+    Supported examples:
+    - Nome/Telefone CSV
+    - pessoaId,email,telefone,observacao XLSX
+    - pessoaId;email;telefone;observacao CSV
+    """
+    suffix = Path(file_path).suffix.lower()
+
+    if suffix == ".xlsx":
+        df = pd.read_excel(file_path, dtype=object)
+    else:
+        df = pd.read_csv(file_path, dtype=str, sep=None, engine="python")
+
+    df.columns = [str(column).strip() for column in df.columns]
+
+    rename_map = {}
+    for column in df.columns:
+        lowered = column.lower()
+        if lowered == "telefone":
+            rename_map[column] = "Telefone"
+        elif lowered == "nome":
+            rename_map[column] = "Nome"
+        elif lowered == "pessoaid":
+            rename_map[column] = "pessoaId"
+        elif lowered == "email":
+            rename_map[column] = "email"
+        elif lowered == "observacao":
+            rename_map[column] = "observacao"
+        else:
+            rename_map[column] = column
+
+    return df.rename(columns=rename_map)
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -135,19 +174,17 @@ class OrchestratorRunner:
         orchestrator.message_variants.clear()
         orchestrator.csv_contacts_df = None
 
-        # Load CSV if provided — columns: Nome, Telefone
+        # Load CSV/XLSX if provided
         if csv_path:
             try:
-                df = pd.read_csv(csv_path, dtype=str)
-                # Normalise column names (strip whitespace, title-case)
-                df.columns = [c.strip().title() for c in df.columns]
+                df = load_contacts_input_file(csv_path)
                 if "Telefone" not in df.columns:
-                    self._route_line("ERROR: CSV must have a 'Telefone' column.\n")
+                    self._route_line("ERROR: input file must have a 'Telefone' or 'telefone' column.\n")
                 else:
                     orchestrator.csv_contacts_df = df
-                    self._route_line(f"CSV loaded: {len(df)} contact(s)\n")
+                    self._route_line(f"Input file loaded: {len(df)} contact(s)\n")
             except Exception as e:
-                self._route_line(f"ERROR loading CSV: {e}\n")
+                self._route_line(f"ERROR loading input file: {e}\n")
 
         custom_msg = message.strip() if message and message.strip() else None
 
@@ -226,7 +263,7 @@ def refresh_credor_campanha_options():
     )
 
 
-def run_orchestrator(count_str, message_text, csv_file):
+def run_orchestrator(count_str, message_text, csv_file, selected_credor, selected_campanha):
     count = int(count_str)
     csv_path = csv_file if csv_file else ""
 
@@ -243,6 +280,24 @@ def run_orchestrator(count_str, message_text, csv_file):
         yield _build_outputs(general, account_logs, cnt, running=True)
 
     general, account_logs, cnt = runner.snapshot()
+    ro_result = ro_service.process_ro_after_run(
+        context={
+            "credor": selected_credor,
+            "campanhaNome": selected_campanha,
+            "codigoCampanha": selected_campanha or settings.RO_CODIGO_CAMPANHA,
+        },
+        run_completed=True,
+    )
+    if ro_result["triggered"]:
+        general += (
+            "\nRO registration finished."
+            f" Eligible: {ro_result['eligible']}"
+            f" | Successes: {ro_result['successes']}"
+            f" | Errors: {ro_result['errors']}"
+            f" | Batches: {ro_result['batches']}\n"
+        )
+    if ro_result["messages"]:
+        general += "\n".join(ro_result["messages"]) + "\n"
     general += "\nOrchestrator finished.\n"
     yield _build_outputs(general, account_logs, cnt, running=False)
 
@@ -309,8 +364,8 @@ def build_ui():
                 scale=3,
             )
             csv_upload = gr.File(
-                label="CSV de Contatos (Nome, Telefone)",
-                file_types=[".csv"],
+                label="Arquivo de Contatos (CSV/XLSX)",
+                file_types=[".csv", ".xlsx"],
                 type="filepath",
                 scale=1,
             )
@@ -390,7 +445,7 @@ def build_ui():
 
         run_btn.click(
             fn=run_orchestrator,
-            inputs=[account_dropdown, message_input, csv_upload],
+            inputs=[account_dropdown, message_input, csv_upload, credor_dropdown, campanha_dropdown],
             outputs=all_outputs,
         )
 

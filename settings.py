@@ -14,6 +14,20 @@ PASSWORD_OLD = config('PASSWORD_OLD')
 HEADER_KEY = config('HEADER_KEY')
 AUTH_KEY_GENERAL = config('AUTH_KEY_GENERAL')
 
+RO_CALLTECH_ENDPOINT = config(
+    'RO_CALLTECH_ENDPOINT',
+    default='https://calltechsmart.kinghost.net/portal/registrarResumo'
+)
+RO_TIMEOUT_SECONDS = config('RO_TIMEOUT_SECONDS', default=60, cast=int)
+RO_TRIGGER_MIN_COUNT = config('RO_TRIGGER_MIN_COUNT', default=100, cast=int)
+RO_BATCH_SIZE = config('RO_BATCH_SIZE', default=390, cast=int)
+RO_RESUMO_ID = config('RO_RESUMO_ID', default=12, cast=int)
+RO_OPERADOR_ID = config('RO_OPERADOR_ID', default=227, cast=int)
+RO_CODIGO_CAMPANHA = config('RO_CODIGO_CAMPANHA', default='000000')
+RO_CAMPANHA_ID = config('RO_CAMPANHA_ID', default=0, cast=int)
+RO_ORIGEM = config('RO_ORIGEM', default='API - Whatsapp Unofficial')
+RO_PARCEIRO = config('RO_PARCEIRO', default='API Whatsapp Unofficial')
+
 
 QUERY_CLIENTS_PHONE = """wwwwselect distinct top(100w0)
 	M.MoInadimplentesID,
@@ -48,7 +62,7 @@ group by
 	PC.PesDDD + PC.PesTelefone
 order by 5 asc, 4 desc"""
 
-CONTACT_BUTTON_URL = "https://wa.me/55318009419333?text=Oi%20quero%20regularizar%20minha%20dívida!"
+CONTACT_BUTTON_URL = "https://wa.me/55318009419333?text=Oi%20quero%20regularizar%20minha%20divida"
 
 CONTACT_MESSAGE = ("""Bom dia NOME_DO_CLIENTE, 
 constatamos que há uma dívida aberta no seu nome.

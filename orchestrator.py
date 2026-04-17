@@ -71,6 +71,49 @@ pending_contacts_df: Optional[pd.DataFrame] = None
 csv_contacts_df: Optional[pd.DataFrame] = None  # CSV override from frontend
 contacts_json_built = False
 
+
+def _normalize_phone_key(value) -> str:
+    """Normalize phone digits so we can preserve state across file rebuilds."""
+    return "".join(ch for ch in str(value) if ch.isdigit())
+
+
+def _find_first_present(row: pd.Series, candidates: List[str]):
+    """Return the first non-empty column value from a row."""
+    for candidate in candidates:
+        if candidate in row.index:
+            value = row[candidate]
+            if pd.notna(value) and str(value).strip() != "":
+                return value
+    return None
+
+
+def _clean_optional_value(value):
+    """Convert pandas NaN/blank values into clean JSON-safe values."""
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return value
+
+
+def _load_previous_ro_state_map(path: str = CONTACTS_BACKUP_FILE) -> dict:
+    """Carry forward RO registration flags so repeated runs don't duplicate inserts."""
+    previous_contacts = load_contacts_file(path)
+    state_map = {}
+    for contact in previous_contacts:
+        phone_key = _normalize_phone_key(contact.get("phone", ""))
+        if not phone_key:
+            continue
+        state_map[phone_key] = {
+            "roRegistered": bool(contact.get("roRegistered", False)),
+            "roRegisteredAt": contact.get("roRegisteredAt"),
+            "roBatchId": contact.get("roBatchId"),
+            "roStatus": contact.get("roStatus"),
+            "roError": contact.get("roError"),
+        }
+    return state_map
+
 def fetch_negociador_df() -> Optional[pd.DataFrame]:
     """Fetch negotiator data from the legacy database."""
     try:
@@ -134,6 +177,7 @@ def df_to_contacts_json(
         return f"+55{digits}"
 
     normalized_accounts: List[str] = list(account_ids or authenticated_accounts)
+    previous_ro_state = _load_previous_ro_state_map()
     # Use the pre-built message_variants array if available, otherwise single message
     variants = message_variants if message_variants else [message]
     has_nome = name_column is not None
@@ -153,8 +197,15 @@ def df_to_contacts_json(
             first_name = full_name.split()[0] if full_name else ""
             contact_message = CLIENT_NAME_PLACEHOLDER_RE.sub(first_name, contact_message)
             print(contact_message)
+        normalized_phone = normalize_phone_br(row["Telefone"])
+        previous_state = previous_ro_state.get(_normalize_phone_key(normalized_phone), {})
+        pessoa_id = _clean_optional_value(
+            _find_first_present(row, ["pessoaId", "PessoaId", "MoInadimplentesID", "Pessoas_ID"])
+        )
+        email = _clean_optional_value(_find_first_present(row, ["email", "Email", "E-mail"]))
+        observacao = _clean_optional_value(_find_first_present(row, ["observacao", "Observacao", "observação"]))
         contacts.append({
-            "phone": normalize_phone_br(row["Telefone"]),
+            "phone": normalized_phone,
             "message": contact_message,
             "buttonUrl": getattr(settings, 'CONTACT_BUTTON_URL', ''),
             "delay": 30000,
@@ -163,7 +214,20 @@ def df_to_contacts_json(
             "delivered": False,
             "deliveredAt": None,
             "ackLevel": None,
-            "sentAt": None
+            "sentAt": None,
+            "pessoaId": pessoa_id,
+            "email": email,
+            "observacao": observacao,
+            "nome": _clean_optional_value(_find_first_present(row, ["Nome", "nome", "Cliente"])),
+            "credor": _clean_optional_value(_find_first_present(row, ["Credor", "CREDOR"])),
+            "campanha": _clean_optional_value(_find_first_present(row, ["Campanha", "CAMPANHA"])),
+            "valor": _clean_optional_value(_find_first_present(row, ["Valor", "valor"])),
+            "aging": _clean_optional_value(_find_first_present(row, ["Aging", "aging"])),
+            "roRegistered": previous_state.get("roRegistered", False),
+            "roRegisteredAt": previous_state.get("roRegisteredAt"),
+            "roBatchId": previous_state.get("roBatchId"),
+            "roStatus": previous_state.get("roStatus"),
+            "roError": previous_state.get("roError"),
         })
 
     out = Path(output_path)
@@ -288,18 +352,29 @@ def normalize_phone_key(value) -> str:
     """Normalize a phone number for comparison using only digits."""
     return "".join(ch for ch in str(value) if ch.isdigit())
 
-def get_delivered_today_phone_keys(contacts, today_str: str):
-    """Return a set of phone keys delivered today based on sentAt."""
-    delivered = set()
+def get_processed_today_phone_keys(contacts, today_str: str):
+    """
+    Return a set of phone keys already processed today.
+
+    A phone is considered processed when the previous run already had:
+    - a successful send recorded today, or
+    - a delivery confirmation recorded today, or
+    - a successful RO registration
+    """
+    processed = set()
     for contact in contacts:
-        if not contact.get("delivered"):
-            continue
         sent_at = contact.get("sentAt")
-        if isinstance(sent_at, str) and today_str in sent_at:
+        delivered_at = contact.get("deliveredAt")
+        sent_ok = bool(contact.get("sent")) and not is_error_sent_at(sent_at)
+        delivered_today = bool(contact.get("delivered")) and isinstance(delivered_at, str) and today_str in delivered_at
+        sent_today = sent_ok and isinstance(sent_at, str) and today_str in sent_at
+        ro_registered = bool(contact.get("roRegistered"))
+
+        if sent_today or delivered_today or ro_registered:
             phone_key = normalize_phone_key(contact.get("phone", ""))
             if phone_key:
-                delivered.add(phone_key)
-    return delivered
+                processed.add(phone_key)
+    return processed
 
 def assign_contacts_round_robin(contacts, account_ids: List[str]):
     """Assign sentBy to contacts evenly across account_ids."""
@@ -445,17 +520,17 @@ def build_contacts_json_final(custom_message: Optional[str] = None) -> bool:
         )
         # Skip dedup when CSV was uploaded — CSV contacts have priority
         previous_contacts = load_contacts_file(CONTACTS_BACKUP_FILE)
-        if previous_contacts and csv_contacts_df is None:
+        if previous_contacts:
             today_str = datetime.now().date().isoformat()
-            delivered_today = get_delivered_today_phone_keys(previous_contacts, today_str)
-            if delivered_today:
+            processed_today = get_processed_today_phone_keys(previous_contacts, today_str)
+            if processed_today:
                 current_contacts = load_contacts()
                 filtered_contacts = [
                     contact for contact in current_contacts
-                    if normalize_phone_key(contact.get("phone", "")) not in delivered_today
+                    if normalize_phone_key(contact.get("phone", "")) not in processed_today
                 ]
                 if len(filtered_contacts) != len(current_contacts):
-                    print(f"🧹 Removed {len(current_contacts) - len(filtered_contacts)} contacts delivered today.")
+                    print(f"🧹 Removed {len(current_contacts) - len(filtered_contacts)} contacts already processed today.")
                 current_contacts = filtered_contacts
                 assign_contacts_round_robin(current_contacts, auth_ids)
                 save_contacts(current_contacts)
