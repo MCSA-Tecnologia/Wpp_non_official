@@ -11,8 +11,10 @@ import re
 import time
 import gradio as gr
 import pandas as pd
+import pyodbc
 
 import orchestrator
+import settings
 
 MAX_ACCOUNTS = 6
 
@@ -44,6 +46,45 @@ def _set_accounts(count: int):
 
 def _empty_logs(count: int):
     return {f"Account {i}": "" for i in range(1, count + 1)}
+
+
+def fetch_credor_campanha_data():
+    """Fetch distinct CREDOR/CAMPANHA pairs and build a mapping by creditor."""
+    query = """
+    SELECT DISTINCT
+        [CAMPANHA],
+        [CREDOR]
+    FROM [Candiotto_DBA].[dbo].[tabelatitulos]
+    WHERE [CREDOR] IS NOT NULL
+      AND [CAMPANHA] IS NOT NULL
+    ORDER BY [CREDOR], [CAMPANHA]
+    """
+
+    conn = None
+    try:
+        conn = pyodbc.connect(
+            'DRIVER={SQL Server};SERVER=' + settings.SERVER
+            + ';DATABASE=' + settings.DATABASE
+            + ';UID=' + settings.USERNAME
+            + ';PWD=' + settings.PASSWORD
+        )
+        df = pd.read_sql_query(query, conn)
+    except Exception as e:
+        print(f"Erro ao buscar credores/campanhas: {e}")
+        df = pd.DataFrame(columns=["CREDOR", "CAMPANHA"])
+    finally:
+        if conn is not None:
+            conn.close()
+
+    mapping = {}
+    if not df.empty:
+        df["CREDOR"] = df["CREDOR"].astype(str).str.strip()
+        df["CAMPANHA"] = df["CAMPANHA"].astype(str).str.strip()
+        df = df[(df["CREDOR"] != "") & (df["CAMPANHA"] != "")]
+        for credor, group in df.groupby("CREDOR", sort=True):
+            mapping[credor] = sorted(group["CAMPANHA"].drop_duplicates().tolist())
+
+    return mapping
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +206,26 @@ def on_account_count_change(count_str):
     return updates
 
 
+def update_campanha_dropdown(selected_credor, credor_campanha_map):
+    campanhas = credor_campanha_map.get(selected_credor, []) if credor_campanha_map else []
+    value = campanhas[0] if campanhas else None
+    return gr.update(choices=campanhas, value=value)
+
+
+def refresh_credor_campanha_options():
+    credor_campanha_map = fetch_credor_campanha_data()
+    credores = sorted(credor_campanha_map.keys())
+    selected_credor = credores[0] if credores else None
+    campanhas = credor_campanha_map.get(selected_credor, []) if selected_credor else []
+    selected_campanha = campanhas[0] if campanhas else None
+
+    return (
+        credor_campanha_map,
+        gr.update(choices=credores, value=selected_credor),
+        gr.update(choices=campanhas, value=selected_campanha),
+    )
+
+
 def run_orchestrator(count_str, message_text, csv_file):
     count = int(count_str)
     csv_path = csv_file if csv_file else ""
@@ -217,8 +278,13 @@ def _build_outputs(general_log, account_logs, count, running=False):
 def build_ui():
     account_boxes = []
     initial_count = len(orchestrator.ACCOUNTS)
+    initial_credor_campanha_map = {}
 
     css = """
+    .gradio-container,
+    .gradio-container *:not(.qr-output textarea) {
+        font-family: 'Times New Roman', Times, serif !important;
+    }
     .qr-output textarea {
         font-family: 'Courier New', Courier, monospace !important;
         font-size: 10px !important;
@@ -237,8 +303,8 @@ def build_ui():
             message_input = gr.Textbox(
                 label="Mensagem",
                 placeholder="Digite a mensagem base aqui... (deixe vazio para usar a mensagem padrão do settings.py)\nUse NOME_DO_CLIENTE para personalizar com o primeiro nome do CSV.",
-                lines=6,
-                max_lines=6,
+                lines=8,
+                max_lines=8,
                 interactive=True,
                 scale=3,
             )
@@ -248,7 +314,9 @@ def build_ui():
                 type="filepath",
                 scale=1,
             )
-
+        with gr.Row():
+            run_btn = gr.Button("▶  Run Disparos", variant="primary", scale=3)
+            stop_btn = gr.Button("⏹  Stop", variant="stop", interactive=False, scale=1)
         with gr.Row():
             account_dropdown = gr.Dropdown(
                 choices=["1", "2", "3", "4", "5", "6"],
@@ -257,8 +325,22 @@ def build_ui():
                 interactive=True,
                 scale=1,
             )
-            run_btn = gr.Button("▶  Run Disparos", variant="primary", scale=3)
-            stop_btn = gr.Button("⏹  Stop", variant="stop", interactive=False, scale=1)
+            credor_campanha_state = gr.State(initial_credor_campanha_map)
+            credor_dropdown = gr.Dropdown(
+                choices=[],
+                value=None,
+                label="Credor",
+                interactive=True,
+                scale=2,
+            )
+            campanha_dropdown = gr.Dropdown(
+                choices=[],
+                value=None,
+                label="Campanha",
+                interactive=True,
+                scale=2,
+            )
+            refresh_credor_btn = gr.Button("Refresh", variant="secondary", scale=1)
 
         with gr.Accordion("Orchestrator Log", open=False):
             general_box = gr.Textbox(
@@ -292,6 +374,18 @@ def build_ui():
             fn=on_account_count_change,
             inputs=[account_dropdown],
             outputs=account_boxes,
+        )
+
+        credor_dropdown.change(
+            fn=update_campanha_dropdown,
+            inputs=[credor_dropdown, credor_campanha_state],
+            outputs=[campanha_dropdown],
+        )
+
+        refresh_credor_btn.click(
+            fn=refresh_credor_campanha_options,
+            inputs=[],
+            outputs=[credor_campanha_state, credor_dropdown, campanha_dropdown],
         )
 
         run_btn.click(

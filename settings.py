@@ -1,6 +1,11 @@
 import os
 from decouple import config
 import pandas as pd
+SERVER = config('SERVER')
+DATABASE = config('DATABASE')
+USERNAME = config('DBUSERNAME')
+PASSWORD = config('PASSWORD')
+
 SERVER_OLD = config('SERVER_OLD')
 DATABASE_OLD = config('DATABASE_OLD')
 USERNAME_OLD = config('DBUSERNAME_OLD')

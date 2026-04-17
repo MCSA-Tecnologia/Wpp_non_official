@@ -11,6 +11,8 @@ import os
 import json
 import random
 import threading
+import re
+import unicodedata
 from datetime import datetime
 import pyodbc
 import pandas as pd
@@ -55,6 +57,15 @@ authenticated_accounts = []
 
 # Message variants array – populated by generate_message_variants() before sending
 message_variants: List[str] = []
+CLIENT_NAME_PLACEHOLDER_RE = re.compile(r"NOME\s*_?\s*DO\s*_?\s*CLIENTE", re.IGNORECASE)
+
+
+def _normalize_placeholder_text(value: str) -> str:
+    """Normalize pasted text so placeholder matching survives invisible Unicode chars."""
+    if value is None:
+        return ""
+    normalized = unicodedata.normalize("NFKC", str(value))
+    return "".join(ch for ch in normalized if unicodedata.category(ch) != "Cf")
 
 pending_contacts_df: Optional[pd.DataFrame] = None
 csv_contacts_df: Optional[pd.DataFrame] = None  # CSV override from frontend
@@ -91,7 +102,7 @@ def generate_message_variants(base_message: str, count: int = MESSAGE_VARIANTS_C
     Replace the body of this function with real variation logic later.
     """
     global message_variants
-    message_variants = [f"{base_message}+{i}" for i in range(count)]
+    message_variants = [f"{base_message}" for i in range(count)]
     print(f"📝 Generated {len(message_variants)} message variant(s)")
     return message_variants
 
@@ -109,6 +120,7 @@ def df_to_contacts_json(
     """
     if "Telefone" not in df.columns:
         raise ValueError("DataFrame must contain a 'Telefone' column.")
+    name_column = next((column for column in df.columns if str(column).strip().lower() == "nome"), None)
 
     def normalize_phone_br(value) -> str:
         # Keep only digits
@@ -124,7 +136,7 @@ def df_to_contacts_json(
     normalized_accounts: List[str] = list(account_ids or authenticated_accounts)
     # Use the pre-built message_variants array if available, otherwise single message
     variants = message_variants if message_variants else [message]
-    has_nome = "Nome" in df.columns
+    has_nome = name_column is not None
     contacts = []
     for index, row in df.iterrows():
         sent_by = None
@@ -132,12 +144,14 @@ def df_to_contacts_json(
             # Alternate between accounts
             sent_by = normalized_accounts[index % len(normalized_accounts)]
         # Cycle through message variants: contact 0 → variant 0, contact 1 → variant 1, ...
-        contact_message = variants[index % len(variants)]
+        contact_message = _normalize_placeholder_text(variants[index % len(variants)])
         # Replace NOME_DO_CLIENTE with first name from CSV (if available)
-        if has_nome and "NOME_DO_CLIENTE" in contact_message:
-            full_name = str(row["Nome"]).strip()
+        if has_nome and CLIENT_NAME_PLACEHOLDER_RE.search(contact_message):
+            full_name = str(row[name_column]).strip()
+            if full_name.lower() == "nan":
+                full_name = ""
             first_name = full_name.split()[0] if full_name else ""
-            contact_message = contact_message.replace("NOME_DO_CLIENTE", first_name)
+            contact_message = CLIENT_NAME_PLACEHOLDER_RE.sub(first_name, contact_message)
             print(contact_message)
         contacts.append({
             "phone": normalize_phone_br(row["Telefone"]),
@@ -637,7 +651,6 @@ def main(tests=False, custom_message: Optional[str] = None):
     log_sent_messages()
 
     print("\n👋 Orchestrator shutting down...")
-
 def cli():
     """
     CLI entry point for automation.
@@ -696,3 +709,30 @@ def cli():
 
 if __name__ == "__main__":
     cli()
+
+
+
+
+#TODO """
+# theoretical question: is there a way to apply a vpn for different location for each different account?
+# ● Yes, there are several approaches, from simplest to most robust:
+#   1. SOCKS5 proxy per account (easiest)                                                                                                                                                                                               Puppeteer (used by whatsapp-web.js) supports --proxy-server as a launch arg. Each account gets its own proxy:
+#   // index.js — each account could receive a proxy arg
+#   const client = new Client({
+#       authStrategy: new LocalAuth({ clientId: accountId }),
+#       puppeteer: {
+#           headless: true,
+#           args: [
+#               '--no-sandbox',
+#               '--disable-setuid-sandbox',
+#               `--proxy-server=socks5://proxy-host:${proxyPort}`
+#           ]
+#       }
+#   });
+#   You'd pass the proxy from the orchestrator per account. Services like Oxylabs, Bright Data, or SmartProxy provide rotating residential proxies with different exit IPs per port.
+# """
+
+
+
+
+
