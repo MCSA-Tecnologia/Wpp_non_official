@@ -409,28 +409,28 @@ def _build_outputs(general_log, account_logs, count, running=False):
 # Build the UI
 # ---------------------------------------------------------------------------
 
+UI_CSS = """
+.gradio-container,
+.gradio-container *:not(.qr-output textarea) {
+    font-family: 'Times New Roman', Times, serif !important;
+}
+.qr-output textarea {
+    font-family: 'Courier New', Courier, monospace !important;
+    font-size: 10px !important;
+    line-height: 1.0 !important;
+    white-space: pre !important;
+    overflow-x: auto !important;
+    letter-spacing: 0px !important;
+}
+footer { display: none !important; }
+"""
+
 def build_ui():
     account_boxes = []
     initial_count = len(orchestrator.ACCOUNTS)
     initial_credor_campanha_map = {}
 
-    css = """
-    .gradio-container,
-    .gradio-container *:not(.qr-output textarea) {
-        font-family: 'Times New Roman', Times, serif !important;
-    }
-    .qr-output textarea {
-        font-family: 'Courier New', Courier, monospace !important;
-        font-size: 10px !important;
-        line-height: 1.0 !important;
-        white-space: pre !important;
-        overflow-x: auto !important;
-        letter-spacing: 0px !important;
-    }
-    footer { display: none !important; }
-    """
-
-    with gr.Blocks(title="WhatsApp Orchestrator", theme=gr.themes.Soft(), css=css) as demo:
+    with gr.Blocks(title="WhatsApp Orchestrator") as demo:
         gr.Markdown("# MCSA WhatsApp Multi-Account Orchestrator")
 
         with gr.Row():
@@ -487,7 +487,7 @@ def build_ui():
                 lines=32,
                 max_lines=32,
                 interactive=False,
-                show_copy_button=True,
+                buttons=["copy"],
                 elem_classes=["qr-output"],
             )
 
@@ -500,7 +500,7 @@ def build_ui():
                         lines=50,
                         max_lines=50,
                         interactive=False,
-                        show_copy_button=True,
+                        buttons=["copy"],
                         elem_classes=["qr-output"],
                         visible=(i <= initial_count),
                     )
@@ -588,4 +588,10 @@ def build_ui():
 
 if __name__ == "__main__":
     demo = build_ui()
-    demo.launch(share=True, favicon_path="src/icon.png", server_port=4778)
+    demo.launch(
+        share=True,
+        favicon_path="src/icon.png",
+        server_port=4778,
+        theme=gr.themes.Soft(),
+        css=UI_CSS,
+    )
