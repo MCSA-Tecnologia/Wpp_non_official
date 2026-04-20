@@ -9,6 +9,8 @@ import sys
 import threading
 import re
 import time
+import base64
+from datetime import datetime
 from pathlib import Path
 import gradio as gr
 import pandas as pd
@@ -262,6 +264,83 @@ def refresh_credor_campanha_options():
         gr.update(choices=campanhas, value=selected_campanha),
     )
 
+def _sanitize_filename_part(value: str | None) -> str:
+    if not value:
+        return ""
+    sanitized = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value).strip())
+    return sanitized.strip("_")
+
+
+def fetch_client_list_for_download() -> pd.DataFrame:
+    query = """
+    SELECT TOP (100)
+        [Pessoa_ID],
+        [NOME_RAZAO_SOCIAL],
+        [NUMERO_CONTRATO],
+        [Faixa_Aging],
+        [STATUS_TITULO]
+    FROM [Candiotto_DBA].[dbo].[tabelatitulos]
+    """
+    conn = None
+    try:
+        conn = pyodbc.connect(
+            'DRIVER={SQL Server};SERVER=' + settings.SERVER
+            + ';DATABASE=' + settings.DATABASE
+            + ';UID=' + settings.USERNAME
+            + ';PWD=' + settings.PASSWORD
+        )
+        return pd.read_sql_query(query, conn)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _build_client_download_xlsx(
+    df: pd.DataFrame,
+    selected_credor: str | None,
+    selected_campanha: str | None,
+) -> tuple[str, str]:
+    export_df = df.rename(
+        columns={
+            "Pessoa_ID": "pessoaId",
+            "NOME_RAZAO_SOCIAL": "email",
+            "NUMERO_CONTRATO": "telefone",
+            "STATUS_TITULO": "observacao",
+        }
+    )
+    export_df = export_df[["pessoaId", "email", "telefone", "observacao"]]
+    export_df = export_df.fillna("")
+
+    filename_parts = ["client_list"]
+    credor_part = _sanitize_filename_part(selected_credor)
+    campanha_part = _sanitize_filename_part(selected_campanha)
+    if credor_part:
+        filename_parts.append(credor_part)
+    if campanha_part:
+        filename_parts.append(campanha_part)
+    filename_parts.append(datetime.now().strftime("%Y%m%d_%H%M%S"))
+
+    filename = f"{'_'.join(filename_parts)}.xlsx"
+    output_buffer = io.BytesIO()
+    with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
+        export_df.to_excel(writer, index=False)
+    output_buffer.seek(0)
+
+    return filename, base64.b64encode(output_buffer.getvalue()).decode("ascii")
+
+
+def download_client_list(selected_credor, selected_campanha):
+    try:
+        df = fetch_client_list_for_download()
+        filename, file_b64 = _build_client_download_xlsx(df, selected_credor, selected_campanha)
+        status = (
+            f"Arquivo gerado com {len(df)} cliente(s) no formato "
+            "`pessoaId,email,telefone,observacao`."
+        )
+        return file_b64, filename, status
+    except Exception as e:
+        return "", "", f"Erro ao gerar lista de clientes: {e}"
+
 
 def run_orchestrator(count_str, message_text, csv_file, selected_credor, selected_campanha):
     count = int(count_str)
@@ -352,7 +431,7 @@ def build_ui():
     """
 
     with gr.Blocks(title="WhatsApp Orchestrator", theme=gr.themes.Soft(), css=css) as demo:
-        gr.Markdown("# WhatsApp Multi-Account Orchestrator")
+        gr.Markdown("# MCSA WhatsApp Multi-Account Orchestrator")
 
         with gr.Row():
             message_input = gr.Textbox(
@@ -395,7 +474,12 @@ def build_ui():
                 interactive=True,
                 scale=2,
             )
-            refresh_credor_btn = gr.Button("Refresh", variant="secondary", scale=1)
+            with gr.Row():
+                refresh_credor_btn = gr.Button("Refresh Credores", variant="secondary", scale=1)
+                download_cliente_btn = gr.Button("Baixar Clientes", variant="secondary", scale=1)
+        download_client_payload = gr.Textbox(visible=False)
+        download_client_filename = gr.Textbox(visible=False)
+        download_status = gr.Markdown("")
 
         with gr.Accordion("Orchestrator Log", open=False):
             general_box = gr.Textbox(
@@ -443,6 +527,46 @@ def build_ui():
             outputs=[credor_campanha_state, credor_dropdown, campanha_dropdown],
         )
 
+        download_event = download_cliente_btn.click(
+            fn=download_client_list,
+            inputs=[credor_dropdown, campanha_dropdown],
+            outputs=[download_client_payload, download_client_filename, download_status],
+        )
+        download_event.then(
+            fn=None,
+            inputs=[download_client_payload, download_client_filename],
+            outputs=[],
+            js="""
+            (payloadB64, filename) => {
+                if (!payloadB64 || !filename) {
+                    return [];
+                }
+
+                const binary = atob(payloadB64);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) {
+                    bytes[i] = binary.charCodeAt(i);
+                }
+
+                const blob = new Blob(
+                    [bytes],
+                    {
+                        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    }
+                );
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+                return [];
+            }
+            """,
+        )
+
         run_btn.click(
             fn=run_orchestrator,
             inputs=[account_dropdown, message_input, csv_upload, credor_dropdown, campanha_dropdown],
@@ -464,4 +588,4 @@ def build_ui():
 
 if __name__ == "__main__":
     demo = build_ui()
-    demo.launch(share=False, server_port=4778)
+    demo.launch(share=True, favicon_path="src/icon.png", server_port=4778)
