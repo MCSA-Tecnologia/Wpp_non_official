@@ -70,6 +70,8 @@ def _normalize_placeholder_text(value: str) -> str:
 pending_contacts_df: Optional[pd.DataFrame] = None
 csv_contacts_df: Optional[pd.DataFrame] = None  # CSV override from frontend
 contacts_json_built = False
+uploaded_contacts_source: Optional[str] = None
+uploaded_contacts_error: Optional[str] = None
 
 
 def _normalize_phone_key(value) -> str:
@@ -113,6 +115,38 @@ def _load_previous_ro_state_map(path: str = CONTACTS_BACKUP_FILE) -> dict:
             "roError": contact.get("roError"),
         }
     return state_map
+
+
+def load_contacts_input_file(file_path: str) -> pd.DataFrame:
+    """
+    Load contact input from CSV or Excel and normalize known column names.
+    """
+    suffix = Path(file_path).suffix.lower()
+
+    if suffix == ".xlsx":
+        df = pd.read_excel(file_path, dtype=object)
+    else:
+        df = pd.read_csv(file_path, dtype=str, sep=None, engine="python")
+
+    df.columns = [str(column).strip() for column in df.columns]
+
+    rename_map = {}
+    for column in df.columns:
+        lowered = column.lower()
+        if lowered == "telefone":
+            rename_map[column] = "Telefone"
+        elif lowered == "nome":
+            rename_map[column] = "Nome"
+        elif lowered == "pessoaid":
+            rename_map[column] = "pessoaId"
+        elif lowered == "email":
+            rename_map[column] = "email"
+        elif lowered == "observacao":
+            rename_map[column] = "observacao"
+        else:
+            rename_map[column] = column
+
+    return df.rename(columns=rename_map)
 
 def fetch_negociador_df() -> Optional[pd.DataFrame]:
     """Fetch negotiator data from the legacy database."""
@@ -518,6 +552,13 @@ def build_contacts_json_final(custom_message: Optional[str] = None) -> bool:
             output_path=CONTACTS_FILE,
             account_ids=auth_ids
         )
+        if uploaded_contacts_source:
+            current_contacts = load_contacts()
+            assign_contacts_round_robin(current_contacts, auth_ids)
+            save_contacts(current_contacts)
+            contacts_json_built = True
+            print(f"âœ… {CONTACTS_FILE} generated successfully!")
+            return True
         # Skip dedup when CSV was uploaded — CSV contacts have priority
         previous_contacts = load_contacts_file(CONTACTS_BACKUP_FILE)
         if previous_contacts:
@@ -614,6 +655,13 @@ def main(tests=False, custom_message: Optional[str] = None):
     print_header()
 
     global pending_contacts_df
+    if uploaded_contacts_source:
+        if uploaded_contacts_error:
+            print(f"Could not use uploaded contacts file '{uploaded_contacts_source}': {uploaded_contacts_error}")
+            sys.exit(1)
+        if csv_contacts_df is None or csv_contacts_df.empty:
+            print(f"Uploaded contacts file '{uploaded_contacts_source}' did not produce any contacts.")
+            sys.exit(1)
     # CSV upload from frontend takes priority over the DB query
     if csv_contacts_df is not None and not csv_contacts_df.empty:
         pending_contacts_df = csv_contacts_df
@@ -766,14 +814,17 @@ def cli():
 
     # Load CSV if provided
     global csv_contacts_df
+    global uploaded_contacts_source
+    global uploaded_contacts_error
     if args.csv:
         try:
-            df = pd.read_csv(args.csv, dtype=str)
-            df.columns = [c.strip().title() for c in df.columns]
+            df = load_contacts_input_file(args.csv)
             if "Telefone" not in df.columns:
                 print("❌ CSV must have a 'Telefone' column")
                 sys.exit(1)
             csv_contacts_df = df
+            uploaded_contacts_source = args.csv
+            uploaded_contacts_error = None
             print(f"📂 CSV loaded: {len(df)} contact(s)")
         except Exception as e:
             print(f"❌ Error loading CSV: {e}")

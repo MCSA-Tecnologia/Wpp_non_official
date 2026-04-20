@@ -92,40 +92,8 @@ def fetch_credor_campanha_data():
 
 
 def load_contacts_input_file(file_path: str) -> pd.DataFrame:
-    """
-    Load contact input from CSV or Excel.
-
-    Supported examples:
-    - Nome/Telefone CSV
-    - pessoaId,email,telefone,observacao XLSX
-    - pessoaId;email;telefone;observacao CSV
-    """
-    suffix = Path(file_path).suffix.lower()
-
-    if suffix == ".xlsx":
-        df = pd.read_excel(file_path, dtype=object)
-    else:
-        df = pd.read_csv(file_path, dtype=str, sep=None, engine="python")
-
-    df.columns = [str(column).strip() for column in df.columns]
-
-    rename_map = {}
-    for column in df.columns:
-        lowered = column.lower()
-        if lowered == "telefone":
-            rename_map[column] = "Telefone"
-        elif lowered == "nome":
-            rename_map[column] = "Nome"
-        elif lowered == "pessoaid":
-            rename_map[column] = "pessoaId"
-        elif lowered == "email":
-            rename_map[column] = "email"
-        elif lowered == "observacao":
-            rename_map[column] = "observacao"
-        else:
-            rename_map[column] = column
-
-    return df.rename(columns=rename_map)
+    """Proxy to the shared orchestrator file loader."""
+    return orchestrator.load_contacts_input_file(file_path)
 
 
 # ---------------------------------------------------------------------------
@@ -175,18 +143,29 @@ class OrchestratorRunner:
         orchestrator.pending_contacts_df = None
         orchestrator.message_variants.clear()
         orchestrator.csv_contacts_df = None
+        orchestrator.uploaded_contacts_source = None
+        orchestrator.uploaded_contacts_error = None
 
         # Load CSV/XLSX if provided
         if csv_path:
             try:
                 df = load_contacts_input_file(csv_path)
                 if "Telefone" not in df.columns:
+                    orchestrator.uploaded_contacts_source = csv_path
+                    orchestrator.uploaded_contacts_error = "input file must have a 'Telefone' or 'telefone' column"
                     self._route_line("ERROR: input file must have a 'Telefone' or 'telefone' column.\n")
+                    self.running = False
+                    return
                 else:
+                    orchestrator.uploaded_contacts_source = csv_path
                     orchestrator.csv_contacts_df = df
                     self._route_line(f"Input file loaded: {len(df)} contact(s)\n")
             except Exception as e:
+                orchestrator.uploaded_contacts_source = csv_path
+                orchestrator.uploaded_contacts_error = str(e)
                 self._route_line(f"ERROR loading input file: {e}\n")
+                self.running = False
+                return
 
         custom_msg = message.strip() if message and message.strip() else None
 
@@ -591,7 +570,7 @@ if __name__ == "__main__":
     demo.launch(
         share=True,
         favicon_path="src/icon.png",
-        server_port=4778,
+        server_port=8502,
         theme=gr.themes.Soft(),
         css=UI_CSS,
     )
