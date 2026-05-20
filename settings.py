@@ -14,10 +14,8 @@ PASSWORD_OLD = config('PASSWORD_OLD')
 HEADER_KEY = config('HEADER_KEY')
 AUTH_KEY_GENERAL = config('AUTH_KEY_GENERAL')
 
-RO_CALLTECH_ENDPOINT = config(
-    'RO_CALLTECH_ENDPOINT',
-    default='https://calltechsmart.kinghost.net/portal/registrarResumo'
-)
+RO_CALLTECH_ENDPOINT = config('RO_CALLTECH_ENDPOINT')
+
 RO_TIMEOUT_SECONDS = config('RO_TIMEOUT_SECONDS', default=60, cast=int)
 RO_TRIGGER_MIN_COUNT = config('RO_TRIGGER_MIN_COUNT', default=100, cast=int)
 RO_BATCH_SIZE = config('RO_BATCH_SIZE', default=390, cast=int)
