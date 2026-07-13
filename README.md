@@ -81,8 +81,6 @@ Todos os valores têm default — o projeto roda com `.env` vazio usando arquivo
 | `VALIDATE_NUMBERS` | True | Verifica se o número tem WhatsApp antes de enviar |
 | `DEFAULT_COUNTRY_CODE` | 55 | DDI adicionado a números com 10–11 dígitos |
 | `SERVER`, `DATABASE`, `DBUSERNAME`, `PASSWORD` | vazio | SQL Server (opcional) |
-| `AUTH_MAX_RETRIES` | 2 | Tentativas extras de autenticação por conta (novo QR a cada tentativa) |
-| `QUERY_CREDOR_CAMPANHA` | ver `settings.py` | Query dos dropdowns Credor/Campanha na interface |
 | `RO_ENABLED` | True | Liga/desliga o pós-processamento RO |
 | `RO_TRIGGER_MIN_COUNT`, `RO_BATCH_SIZE` | 100 / 390 | Regras de lote do RO |
 | `CONTACT_MESSAGE`, `CONTACT_BUTTON_URL` | ver `settings.py` | Mensagem base e URL anexada |
@@ -120,16 +118,10 @@ python frontend.py
 # http://127.0.0.1:8502
 ```
 
-1. Escolha a quantidade de chips e clique em **Autenticar chips** — escaneie os QR Codes exibidos (WhatsApp → Aparelhos conectados). Se uma conta falhar, ela é **reautenticada automaticamente** (até `AUTH_MAX_RETRIES` tentativas extras, com um QR novo a cada tentativa); sobrou falha, use o botão **🔁 Reautenticar contas com falha**. Sessões ficam salvas em `.wwebjs_auth/`; nas próximas execuções não pede QR.
-2. Ajuste a mensagem base (`NOME_DO_CLIENTE` é substituído pelo primeiro nome), envie o arquivo de contatos (ou deixe vazio para carregar do banco). Em **Credor/Campanha**, clique em **🗄️ Carregar Credores/Campanhas do banco** para preencher os dropdowns via SQL (`QUERY_CREDOR_CAMPANHA`); selecionar um credor filtra as campanhas dele. Digitação manual continua funcionando (dropdowns aceitam valor livre). A interface é organizada em seções recolhíveis (Autenticação, Mensagem/Contatos, Credor/Campanha, QRs, Contas, Logs).
+1. Escolha a quantidade de chips e clique em **1) Autenticar chips** — escaneie os QR Codes exibidos (WhatsApp → Aparelhos conectados). Sessões ficam salvas em `.wwebjs_auth/`; nas próximas execuções não pede QR.
+2. Ajuste a mensagem base (`NOME_DO_CLIENTE` é substituído pelo primeiro nome), envie o arquivo de contatos (ou deixe vazio para carregar do banco), preencha Credor/Campanha.
 3. Clique em **2) Disparar** e acompanhe QRs, tabela de contas, progresso e logs em tempo real.
 4. Ao final, o RO roda automaticamente (a menos que "Pular RO" esteja marcado). O botão **Processar RO agora** reprocessa pendências a qualquer momento.
-
-Controles de interrupção:
-
-- **⏹️ Parar autenticação** — cancela o escaneamento em andamento (mata os bots de auth e limpa os QR Codes pendentes).
-- **⏹️ Parar disparo** — encerra os bots de envio imediatamente. Contatos já enviados permanecem marcados em `contacts.json` (não repetem no próximo disparo); o RO automático é pulado — use **Processar RO agora** para registrar o que já foi enviado.
-- **🔓 Desautenticar todos os chips** — faz logout de cada conta (`client.logout()`, o aparelho some de "Aparelhos conectados" no WhatsApp) e apaga as sessões locais em `.wwebjs_auth/`. A próxima autenticação começa do zero com QR novo.
 
 ### CLI
 
@@ -149,7 +141,6 @@ Na CLI a autenticação é **sequencial** por padrão (um QR por vez no terminal
 ```bash
 node bot/index.js account_1 auth                 # autentica e sai
 node bot/index.js account_1 send contacts.json   # envia os contatos atribuídos e sai
-node bot/index.js account_1 logout               # desvincula o aparelho e sai
 ```
 
 ## Fluxo de uma execução
