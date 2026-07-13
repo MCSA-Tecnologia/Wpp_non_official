@@ -10,7 +10,8 @@ import pandas as pd
 import os
 import json
 import base64
-from google.auth.transport.requests import Request
+from pathlib import Path
+from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -23,6 +24,7 @@ import settings
 auth_key = settings.AUTH_KEY_GENERAL
 head_key = settings.HEADER_KEY
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
 class UnoffWpp(BaseModel):
@@ -63,22 +65,6 @@ def verify_token_dual(token: str = Depends(oauth2_scheme)):
     if (token != settings.AUTH_KEY_HYPER) and (token != settings.AUTH_KEY_GENERAL):
         raise HTTPException(status_code=401, detail="Invalid or missing auth token")
     return token
-
-@app.post("/UN_injectionSheets", tags=["recupera_cpf_cnpj"])
-def injection_sheets(req:UnoffWpp, request: Request,
-                        headkey: str = Header(..., alias="headkey"),
-                        token: str = Depends(verify_token)
-                        ):
-    """Unofficial Whatsapp
-        Adds the successful hyperflow open protocol to sheets
-        Args: class UnoffWpp
-
-        Returns: None
-    """
-    if headkey != head_key:
-        raise HTTPException(status_code=403, detail="Invalid Header Match")
-    monoid='not found'
-
 
 @app.post("/UN_injectionSheets", tags=["injectionSheets"])
 def injection_sheets(req:UnoffWpp, request: Request,
@@ -202,7 +188,7 @@ def write_hf_protocol_by_keys(
     creds = Credentials.from_authorized_user_file(token_path, scopes=SHEETS_SCOPES)
     if not creds.valid:
         if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            creds.refresh(GoogleAuthRequest())
         else:
             raise RuntimeError("Token invalid and cannot refresh. Re-auth required.")
 
@@ -306,17 +292,6 @@ group by
 order by 5 asc, 4 desc
 """
 
-try:
-    query_negociador = QUERY_NEGOCIADOR_BY_CPF
-    conn = pyodbc.connect(
-        'DRIVER={SQL Server};SERVER=' + settings.SERVER_OLD + ';DATABASE=' + settings.DATABASE_OLD + ';UID=' + settings.USERNAME_OLD + ';PWD=' + settings.PASSWORD_OLD
-    )
-    querr = pd.read_sql_query(query_negociador, conn)
-
-    conn.close()
-except Exception as e:
-    print(f"Erro ao buscar dados do negociador: {e}")
-
 def df_to_contacts_json(df: pd.DataFrame, output_path: str = "contacts.json") -> str:
     """
     Create contacts.json from a DataFrame.
@@ -366,5 +341,3 @@ def df_to_contacts_json(df: pd.DataFrame, output_path: str = "contacts.json") ->
     out = Path(output_path)
     out.write_text(json.dumps(contacts, ensure_ascii=False, indent=2), encoding="utf-8")
     return str(out)
-
-df_to_contacts_json(querr)

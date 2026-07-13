@@ -37,24 +37,27 @@ const contactsFile = process.argv[3] || 'contacts.json';
 // Load contacts from JSON file
 const contactsPath = path.join(__dirname, contactsFile);
 
-// Error reporting configuration
-const ERROR_REPORT_URL = requireEnv('ERROR_REPORT_URL');
-const ERROR_REPORT_AUTH_TOKEN = requireEnv('ERROR_REPORT_AUTH_TOKEN');
-const ERROR_REPORT_HEADER_KEY = requireEnv('ERROR_REPORT_HEADER_KEY');
-const ERROR_REPORT_HEADER_VALUE = requireEnv('ERROR_REPORT_HEADER_VALUE');
-
 // Function to report error to endpoint
 async function reportError(phone) {
     const today = new Date().toISOString().split('T')[0];
+    const reportUrl = process.env.ERROR_REPORT_URL;
+    const authToken = process.env.ERROR_REPORT_AUTH_TOKEN;
+    const headerKey = process.env.ERROR_REPORT_HEADER_KEY;
+    const headerValue = process.env.ERROR_REPORT_HEADER_VALUE;
+
+    if (!reportUrl || !authToken || !headerKey || !headerValue) {
+        console.warn(`[${accountId}] Error report skipped for ${phone}: reporting env vars are incomplete.`);
+        return;
+    }
     
     try {
-        await axios.post(ERROR_REPORT_URL, {
+        await axios.post(reportUrl, {
             data: phone,
             exdata: today
         }, {
             headers: {
-                [ERROR_REPORT_HEADER_KEY]: ERROR_REPORT_HEADER_VALUE,
-                'Authorization': `Bearer ${ERROR_REPORT_AUTH_TOKEN}`,
+                [headerKey]: headerValue,
+                'Authorization': `Bearer ${authToken}`,
                 'Content-Type': 'application/json'
             }
         });
@@ -200,9 +203,40 @@ client.on('auth_failure', (msg) => {
     process.exit(1);
 });
 
+function isRetryableInitializationError(error) {
+    const message = String(error?.message || error || '');
+    return message.includes('Execution context was destroyed')
+        || message.includes('Protocol error (Runtime.callFunctionOn)');
+}
+
+async function initializeClientWithRetry(maxAttempts = 3) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            await client.initialize();
+            return;
+        } catch (error) {
+            console.error(`[${accountId}] WhatsApp client initialization failed (attempt ${attempt}/${maxAttempts}):`, error.message || error);
+
+            if (!isRetryableInitializationError(error) || attempt === maxAttempts) {
+                process.exit(1);
+            }
+
+            try {
+                await client.destroy();
+            } catch (destroyError) {
+                console.error(`[${accountId}] Failed to clean up browser before retry:`, destroyError.message || destroyError);
+            }
+
+            const delayMs = 2000 * attempt;
+            console.log(`[${accountId}] Retrying WhatsApp client initialization in ${delayMs / 1000}s...`);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+    }
+}
+
 // Initialize
 console.log(`[${accountId}] 🚀 Starting sender...`);
-client.initialize();
+initializeClientWithRetry();
 
 // Timeout safety
 setTimeout(() => {

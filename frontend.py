@@ -1,576 +1,439 @@
 """
-Gradio Frontend for WhatsApp Multi-Account Orchestrator
-Dynamically creates per-account displays based on a dropdown selector (1–4).
-Shows QR codes and live output per account; disables the Run button while active.
-"""
+AutoWpp 2 — Gradio web frontend
 
-import io
-import sys
+Flow:
+  1. Pick the number of chips and click "1) Autenticar" — a QR code appears
+     for each account; scan them in WhatsApp > Aparelhos conectados.
+     Accounts that fail are retried automatically (new QR); a manual
+     "Reautenticar contas com falha" button covers anything left over.
+  2. Write the base message, upload the CSV/XLSX (optional — falls back to
+     the database), pick Credor/Campanha (button loads both from SQL Server)
+     and click "2) Disparar".
+  3. Follow the live progress table; RO runs automatically at the end.
+
+Run:  python frontend.py   →  http://127.0.0.1:8502
+"""
+from __future__ import annotations
+
 import threading
-import re
-import time
-import base64
 from datetime import datetime
 from pathlib import Path
+
 import gradio as gr
 import pandas as pd
-import pyodbc
+import qrcode
 
-import orchestrator
-import ro_service
 import settings
+import orchestrator
+import contacts_loader
+import ro_service
 
-MAX_ACCOUNTS = 6
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-ACCOUNT_LINE_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)", re.DOTALL)
-
-
-def _make_account(n: int) -> dict:
-    """Build a fresh account dict for account number *n* (1-based)."""
-    return {
-        "id": f"account_{n}",
-        "name": f"Account {n}",
-        "process": None,
-        "authenticated": False,
-        "ready": False,
-        "consecutive_uses": 0,
-    }
-
-
-def _set_accounts(count: int):
-    """Rebuild orchestrator.ACCOUNTS in-place to have *count* entries."""
-    orchestrator.ACCOUNTS.clear()
-    for i in range(1, count + 1):
-        orchestrator.ACCOUNTS.append(_make_account(i))
-
-
-def _empty_logs(count: int):
-    return {f"Account {i}": "" for i in range(1, count + 1)}
-
-
-def fetch_credor_campanha_data():
-    """Fetch distinct CREDOR/CAMPANHA pairs and build a mapping by creditor."""
-    query = """
-    SELECT DISTINCT
-        [CAMPANHA],
-        [CREDOR]
-    FROM [Candiotto_DBA].[dbo].[tabelatitulos]
-    WHERE [CREDOR] IS NOT NULL
-      AND [CAMPANHA] IS NOT NULL
-    ORDER BY [CREDOR], [CAMPANHA]
-    """
-
-    conn = None
-    try:
-        conn = pyodbc.connect(
-            'DRIVER={SQL Server};SERVER=' + settings.SERVER
-            + ';DATABASE=' + settings.DATABASE
-            + ';UID=' + settings.USERNAME
-            + ';PWD=' + settings.PASSWORD
-        )
-        df = pd.read_sql_query(query, conn)
-    except Exception as e:
-        print(f"Erro ao buscar credores/campanhas: {e}")
-        df = pd.DataFrame(columns=["CREDOR", "CAMPANHA"])
-    finally:
-        if conn is not None:
-            conn.close()
-
-    mapping = {}
-    if not df.empty:
-        df["CREDOR"] = df["CREDOR"].astype(str).str.strip()
-        df["CAMPANHA"] = df["CAMPANHA"].astype(str).str.strip()
-        df = df[(df["CREDOR"] != "") & (df["CAMPANHA"] != "")]
-        for credor, group in df.groupby("CREDOR", sort=True):
-            mapping[credor] = sorted(group["CAMPANHA"].drop_duplicates().tolist())
-
-    return mapping
-
-
-def load_contacts_input_file(file_path: str) -> pd.DataFrame:
-    """Proxy to the shared orchestrator file loader."""
-    return orchestrator.load_contacts_input_file(file_path)
-
+RUNTIME_DIR = orchestrator.RUNTIME_DIR
+MAX_ACCOUNTS = settings.MAX_ACCOUNTS
 
 # ---------------------------------------------------------------------------
-# Runner
+# Shared state (frontend <-> background threads)
 # ---------------------------------------------------------------------------
 
-class _TeeWriter(io.TextIOBase):
-    """A writer that intercepts every line and routes it to the runner."""
-
-    def __init__(self, runner: "OrchestratorRunner", original):
-        self._runner = runner
-        self._original = original
-
-    def write(self, s: str):
-        if s:
-            for line in s.splitlines(keepends=True):
-                self._runner._route_line(line)
-            # Also forward to the real stdout so the terminal still works
-            if self._original:
-                self._original.write(s)
-        return len(s) if s else 0
-
-    def flush(self):
-        if self._original:
-            self._original.flush()
-
-
-class OrchestratorRunner:
-    def __init__(self):
-        self.running = False
-        self.general_log = ""
-        self.account_logs: dict[str, str] = {}
-        self.account_count = 1
+class AppState:
+    def __init__(self) -> None:
         self.lock = threading.Lock()
+        self.phase = "idle"            # idle | auth | ready | sending | done | error
+        self.accounts: list[str] = []
+        self.authenticated: list[str] = []
+        self.failed_auth: list[str] = []
+        self.logs: list[str] = []
+        self.stats = {"total": 0, "sent": 0, "failed": 0, "delivered": 0}
+        self.busy = False
 
-    def start(self, count: int, message: str = "", csv_path: str = ""):
-        self.running = True
-        self.account_count = count
-        self.general_log = ""
-        self.account_logs = _empty_logs(count)
-
-        # Rebuild orchestrator.ACCOUNTS in-place before calling main()
-        _set_accounts(count)
-        # Reset orchestrator globals that accumulate across runs
-        orchestrator.authenticated_accounts.clear()
-        orchestrator.contacts_json_built = False
-        orchestrator.pending_contacts_df = None
-        orchestrator.message_variants.clear()
-        orchestrator.csv_contacts_df = None
-        orchestrator.uploaded_contacts_source = None
-        orchestrator.uploaded_contacts_error = None
-
-        # Load CSV/XLSX if provided
-        if csv_path:
-            try:
-                df = load_contacts_input_file(csv_path)
-                if "Telefone" not in df.columns:
-                    orchestrator.uploaded_contacts_source = csv_path
-                    orchestrator.uploaded_contacts_error = "input file must have a 'Telefone' or 'telefone' column"
-                    self._route_line("ERROR: input file must have a 'Telefone' or 'telefone' column.\n")
-                    self.running = False
-                    return
-                else:
-                    orchestrator.uploaded_contacts_source = csv_path
-                    orchestrator.csv_contacts_df = df
-                    self._route_line(f"Input file loaded: {len(df)} contact(s)\n")
-            except Exception as e:
-                orchestrator.uploaded_contacts_source = csv_path
-                orchestrator.uploaded_contacts_error = str(e)
-                self._route_line(f"ERROR loading input file: {e}\n")
-                self.running = False
-                return
-
-        custom_msg = message.strip() if message and message.strip() else None
-
-        # Redirect stdout so we capture all print() output from orchestrator
-        original_stdout = sys.stdout
-        sys.stdout = _TeeWriter(self, original_stdout)
-        try:
-            orchestrator.main(custom_message=custom_msg)
-        except SystemExit:
-            pass  # orchestrator calls sys.exit on failure; absorb it
-        except Exception as e:
-            self._route_line(f"ERROR: {e}\n")
-        finally:
-            sys.stdout = original_stdout
-            self.running = False
-
-    def _route_line(self, line: str):
-        m = ACCOUNT_LINE_RE.match(line.rstrip())
+    def log(self, message: str) -> None:
+        stamp = datetime.now().strftime("%H:%M:%S")
         with self.lock:
-            if m:
-                name = m.group(1).strip()
-                content = m.group(2) + "\n"
-                if name in self.account_logs:
-                    self.account_logs[name] += content
-                else:
-                    self.general_log += line
-            else:
-                self.general_log += line
+            self.logs.append(f"[{stamp}] {message}")
+            self.logs = self.logs[-400:]
 
-    def snapshot(self):
+    def text_logs(self) -> str:
         with self.lock:
-            return self.general_log, dict(self.account_logs), self.account_count
-
-    def stop(self):
-        # Stop all running bot processes managed by orchestrator
-        orchestrator.stop_bots(orchestrator.ACCOUNTS)
-        self.running = False
+            return "\n".join(self.logs[-200:])
 
 
-runner = OrchestratorRunner()
+STATE = AppState()
+
 
 # ---------------------------------------------------------------------------
-# Gradio callbacks
+# Rendering helpers
 # ---------------------------------------------------------------------------
 
-def on_account_count_change(count_str):
-    """When the dropdown changes, show/hide account boxes."""
-    count = int(count_str)
-    _set_accounts(count)
-    updates = []
-    for i in range(1, MAX_ACCOUNTS + 1):
-        if i <= count:
-            updates.append(gr.update(visible=True, value="", label=f"Chip {i}"))
+def render_qr_images() -> list[tuple]:
+    """Turn runtime/qr_<acc>.txt files into PIL images for the gallery."""
+    images = []
+    for account in STATE.accounts:
+        qr_file = orchestrator.qr_path(account)
+        if qr_file.exists():
+            data = qr_file.read_text(encoding="utf-8").strip()
+            if data:
+                img = qrcode.make(data).get_image().convert("RGB")
+                images.append((img, f"{account} — escaneie no WhatsApp"))
+    return images
+
+
+def status_table() -> pd.DataFrame:
+    rows = []
+    for account in STATE.accounts:
+        status = orchestrator.read_status(account)
+        rows.append(
+            {
+                "Conta": account,
+                "Estado": status.get("state", "offline"),
+                "Atribuídos": status.get("total", ""),
+                "Enviados": status.get("sent", ""),
+                "Falhas": status.get("failed", ""),
+                "Atualizado": str(status.get("updatedAt", ""))[11:19],
+            }
+        )
+    if not rows:
+        rows = [{"Conta": "-", "Estado": "aguardando", "Atribuídos": "", "Enviados": "", "Falhas": "", "Atualizado": ""}]
+    return pd.DataFrame(rows)
+
+
+def progress_text() -> str:
+    s = STATE.stats
+    line = (
+        f"Fase: {STATE.phase} | Total: {s['total']} | Enviados: {s['sent']} | "
+        f"Entregues: {s['delivered']} | Falhas: {s['failed']}"
+    )
+    if STATE.authenticated:
+        line += f" | Autenticadas: {', '.join(STATE.authenticated)}"
+    if STATE.failed_auth:
+        line += f" | Falha auth: {', '.join(STATE.failed_auth)}"
+    return line
+
+
+# ---------------------------------------------------------------------------
+# Actions (background threads)
+# ---------------------------------------------------------------------------
+
+def _auth_worker(accounts: list[str], merge: bool = False) -> None:
+    """Authenticate `accounts` (auto-retry inside orchestrator.authenticate)."""
+    try:
+        authenticated = orchestrator.authenticate(accounts, sequential=False, log=STATE.log)
+        if merge:
+            STATE.authenticated = sorted(set(STATE.authenticated) | set(authenticated))
         else:
-            updates.append(gr.update(visible=False, value=""))
-    return updates
+            STATE.authenticated = authenticated
+        STATE.failed_auth = [a for a in STATE.accounts if a not in STATE.authenticated]
+        STATE.phase = "ready" if STATE.authenticated else "error"
+        STATE.log(f"Autenticação concluída: {STATE.authenticated or 'nenhuma conta'}")
+        if STATE.failed_auth:
+            STATE.log(
+                f"Contas com falha: {STATE.failed_auth} — use 'Reautenticar contas com falha' "
+                f"para gerar novos QR Codes."
+            )
+    except Exception as exc:
+        STATE.phase = "error"
+        STATE.log(f"Erro na autenticação: {exc}")
+    finally:
+        STATE.busy = False
 
 
-def update_campanha_dropdown(selected_credor, credor_campanha_map):
-    campanhas = credor_campanha_map.get(selected_credor, []) if credor_campanha_map else []
-    value = campanhas[0] if campanhas else None
-    return gr.update(choices=campanhas, value=value)
+def start_auth(chips: float):
+    if STATE.busy:
+        return "Ocupado — aguarde a operação atual."
+    STATE.busy = True
+    STATE.phase = "auth"
+    STATE.accounts = orchestrator.account_ids(int(chips))
+    STATE.authenticated = []
+    STATE.failed_auth = []
+    STATE.log(
+        f"Iniciando autenticação de {len(STATE.accounts)} conta(s) "
+        f"(até {settings.AUTH_MAX_RETRIES + 1} tentativas por conta)..."
+    )
+    threading.Thread(target=_auth_worker, args=(STATE.accounts,), daemon=True).start()
+    return "Autenticação iniciada — escaneie os QR Codes abaixo."
 
 
-def refresh_credor_campanha_options():
-    credor_campanha_map = fetch_credor_campanha_data()
-    credores = sorted(credor_campanha_map.keys())
+def retry_failed_auth():
+    if STATE.busy:
+        return "Ocupado — aguarde a operação atual."
+    failed = [a for a in STATE.accounts if a not in STATE.authenticated]
+    if not failed:
+        return "Nenhuma conta com falha de autenticação."
+    STATE.busy = True
+    STATE.phase = "auth"
+    STATE.log(f"Reautenticando contas com falha: {failed} — novos QR Codes a caminho...")
+    threading.Thread(target=_auth_worker, args=(failed, True), daemon=True).start()
+    return f"Reautenticando {', '.join(failed)} — escaneie os novos QR Codes."
+
+
+def stop_auth():
+    if STATE.phase != "auth":
+        return "Nenhuma autenticação em andamento."
+    killed = orchestrator.request_stop("auth", log=STATE.log)
+    STATE.log("Autenticação interrompida pelo usuário.")
+    return f"Autenticação interrompida ({killed} bot(s) finalizado(s))."
+
+
+def stop_send():
+    if STATE.phase != "sending":
+        return "Nenhum disparo em andamento."
+    killed = orchestrator.request_stop("send", log=STATE.log)
+    STATE.log("Disparo interrompido pelo usuário. Contatos já enviados permanecem marcados.")
+    return f"Disparo interrompido ({killed} bot(s) finalizado(s)). Use 'Processar RO agora' se quiser registrar o que já foi enviado."
+
+
+def unauth_all():
+    if STATE.busy:
+        return "Ocupado — pare a operação atual antes de desautenticar."
+    targets = sorted(set(STATE.accounts) | set(STATE.authenticated))
+    if not targets:
+        # Nothing tracked in this session: clean every session folder on disk.
+        targets = sorted(
+            d.name.replace("session-", "")
+            for d in orchestrator.AUTH_DIR.glob("session-*")
+        ) if orchestrator.AUTH_DIR.exists() else []
+    if not targets:
+        return "Nenhuma sessão autenticada encontrada."
+
+    STATE.busy = True
+    STATE.phase = "unauth"
+    STATE.log(f"Desautenticando chips: {targets}...")
+
+    def worker() -> None:
+        try:
+            removed = orchestrator.unauthenticate(targets, log=STATE.log)
+            STATE.authenticated = []
+            STATE.failed_auth = []
+            STATE.phase = "idle"
+            STATE.log(f"Desautenticação concluída: {removed}. Autentique novamente para disparar.")
+        except Exception as exc:
+            STATE.phase = "error"
+            STATE.log(f"Erro na desautenticação: {exc}")
+        finally:
+            STATE.busy = False
+
+    threading.Thread(target=worker, daemon=True).start()
+    return f"Desautenticando {len(targets)} chip(s) — acompanhe nos logs."
+
+
+def start_dispatch(message: str, button_url: str, upload, credor: str, campanha: str, skip_ro: bool):
+    if STATE.busy:
+        return "Ocupado — aguarde a operação atual."
+    if not STATE.authenticated:
+        return "Nenhuma conta autenticada. Rode a etapa 1 primeiro."
+
+    csv_path = None
+    if upload is not None:
+        csv_path = upload if isinstance(upload, str) else getattr(upload, "name", None)
+
+    ro_context = {}
+    if campanha:
+        ro_context["codigoCampanha"] = campanha
+    if credor:
+        ro_context["parceiro"] = f"{settings.RO_PARCEIRO} - {credor}"
+
+    STATE.busy = True
+    STATE.phase = "sending"
+    STATE.stats = {"total": 0, "sent": 0, "failed": 0, "delivered": 0}
+    STATE.log("Iniciando disparo...")
+
+    def progress_cb(stats: dict) -> None:
+        STATE.stats = stats
+
+    def worker() -> None:
+        try:
+            result = orchestrator.run_pipeline(
+                chips=len(STATE.authenticated),
+                csv_path=csv_path,
+                message=message or None,
+                button_url=button_url if button_url is not None else None,
+                skip_ro=skip_ro,
+                ro_context=ro_context or None,
+                log=STATE.log,
+                progress_cb=progress_cb,
+                preauthenticated=STATE.authenticated,
+            )
+            STATE.stats = result["stats"]
+            STATE.phase = "done"
+            STATE.log("Disparo finalizado.")
+        except Exception as exc:
+            STATE.phase = "error"
+            STATE.log(f"Erro no disparo: {exc}")
+        finally:
+            STATE.busy = False
+
+    threading.Thread(target=worker, daemon=True).start()
+    return "Disparo iniciado — acompanhe o progresso abaixo."
+
+
+# ---------------------------------------------------------------------------
+# Credor / Campanha (SQL Server)
+# ---------------------------------------------------------------------------
+
+def load_credor_campanha():
+    """Button handler: query the database and fill both dropdowns."""
+    try:
+        mapping = contacts_loader.fetch_credor_campanha()
+    except Exception as exc:
+        STATE.log(f"Erro ao buscar credores/campanhas: {exc}")
+        return (
+            {},
+            gr.update(),
+            gr.update(),
+            f"Erro ao consultar o banco: {exc}",
+        )
+
+    credores = sorted(mapping.keys())
     selected_credor = credores[0] if credores else None
-    campanhas = credor_campanha_map.get(selected_credor, []) if selected_credor else []
+    campanhas = mapping.get(selected_credor, []) if selected_credor else []
     selected_campanha = campanhas[0] if campanhas else None
 
+    STATE.log(f"Credores/campanhas carregados do banco: {len(credores)} credores.")
     return (
-        credor_campanha_map,
+        mapping,
         gr.update(choices=credores, value=selected_credor),
         gr.update(choices=campanhas, value=selected_campanha),
+        f"{len(credores)} credores carregados do banco.",
     )
 
-def _sanitize_filename_part(value: str | None) -> str:
-    if not value:
-        return ""
-    sanitized = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value).strip())
-    return sanitized.strip("_")
+
+def update_campanha_options(selected_credor, mapping):
+    campanhas = (mapping or {}).get(selected_credor, [])
+    return gr.update(choices=campanhas, value=campanhas[0] if campanhas else None)
 
 
-def fetch_client_list_for_download() -> pd.DataFrame:
-    query = """
-    SELECT TOP (100)
-        [Pessoa_ID],
-        [NOME_RAZAO_SOCIAL],
-        [NUMERO_CONTRATO],
-        [Faixa_Aging],
-        [STATUS_TITULO]
-    FROM [Candiotto_DBA].[dbo].[tabelatitulos]
-    """
-    conn = None
+def run_ro_now(credor: str, campanha: str):
+    context = {}
+    if campanha:
+        context["codigoCampanha"] = campanha
+    if credor:
+        context["parceiro"] = f"{settings.RO_PARCEIRO} - {credor}"
     try:
-        conn = pyodbc.connect(
-            'DRIVER={SQL Server};SERVER=' + settings.SERVER
-            + ';DATABASE=' + settings.DATABASE
-            + ';UID=' + settings.USERNAME
-            + ';PWD=' + settings.PASSWORD
+        result = ro_service.process_ro_after_run(context=context or None, run_completed=True)
+        for message in result.get("messages", []):
+            STATE.log(f"RO: {message}")
+        return (
+            f"RO: elegíveis={result['eligible']} sucesso={result['successes']} "
+            f"erros={result['errors']} lotes={result['batches']}"
         )
-        return pd.read_sql_query(query, conn)
-    finally:
-        if conn is not None:
-            conn.close()
+    except Exception as exc:
+        STATE.log(f"Erro no RO: {exc}")
+        return f"Erro no RO: {exc}"
 
 
-def _build_client_download_xlsx(
-    df: pd.DataFrame,
-    selected_credor: str | None,
-    selected_campanha: str | None,
-) -> tuple[str, str]:
-    export_df = df.rename(
-        columns={
-            "Pessoa_ID": "pessoaId",
-            "NOME_RAZAO_SOCIAL": "email",
-            "NUMERO_CONTRATO": "telefone",
-            "STATUS_TITULO": "observacao",
-        }
+def sample_csv():
+    df = pd.DataFrame(
+        [
+            ["Maria Silva", "31999999999", "12345", "maria@email.com", "Cliente prioritário"],
+            ["João Souza", "41988888888", "67890", "joao@email.com", "Carteira B"],
+        ],
+        columns=["Nome", "Telefone", "pessoaId", "email", "observacao"],
     )
-    export_df = export_df[["pessoaId", "email", "telefone", "observacao"]]
-    export_df = export_df.fillna("")
-
-    filename_parts = ["client_list"]
-    credor_part = _sanitize_filename_part(selected_credor)
-    campanha_part = _sanitize_filename_part(selected_campanha)
-    if credor_part:
-        filename_parts.append(credor_part)
-    if campanha_part:
-        filename_parts.append(campanha_part)
-    filename_parts.append(datetime.now().strftime("%Y%m%d_%H%M%S"))
-
-    filename = f"{'_'.join(filename_parts)}.xlsx"
-    output_buffer = io.BytesIO()
-    with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
-        export_df.to_excel(writer, index=False)
-    output_buffer.seek(0)
-
-    return filename, base64.b64encode(output_buffer.getvalue()).decode("ascii")
+    target = Path("samples") / "modelo_contatos.csv"
+    target.parent.mkdir(exist_ok=True)
+    df.to_csv(target, index=False, encoding="utf-8-sig")
+    return str(target)
 
 
-def download_client_list(selected_credor, selected_campanha):
-    try:
-        df = fetch_client_list_for_download()
-        filename, file_b64 = _build_client_download_xlsx(df, selected_credor, selected_campanha)
-        status = (
-            f"Arquivo gerado com {len(df)} cliente(s) no formato "
-            "`pessoaId,email,telefone,observacao`."
-        )
-        return file_b64, filename, status
-    except Exception as e:
-        return "", "", f"Erro ao gerar lista de clientes: {e}"
-
-
-def run_orchestrator(count_str, message_text, csv_file, selected_credor, selected_campanha):
-    count = int(count_str)
-    csv_path = csv_file if csv_file else ""
-
-    if runner.running:
-        yield _build_outputs("Orchestrator is already running.\n", _empty_logs(count), count, running=True)
-        return
-
-    t = threading.Thread(target=runner.start, args=(count, message_text, csv_path), daemon=True)
-    t.start()
-
-    while runner.running or t.is_alive():
-        time.sleep(1)
-        general, account_logs, cnt = runner.snapshot()
-        yield _build_outputs(general, account_logs, cnt, running=True)
-
-    general, account_logs, cnt = runner.snapshot()
-    ro_result = ro_service.process_ro_after_run(
-        context={
-            "credor": selected_credor,
-            "campanhaNome": selected_campanha,
-            "codigoCampanha": selected_campanha or settings.RO_CODIGO_CAMPANHA,
-        },
-        run_completed=True,
-    )
-    if ro_result["triggered"]:
-        general += (
-            "\nRO registration finished."
-            f" Eligible: {ro_result['eligible']}"
-            f" | Successes: {ro_result['successes']}"
-            f" | Errors: {ro_result['errors']}"
-            f" | Batches: {ro_result['batches']}\n"
-        )
-    if ro_result["messages"]:
-        general += "\n".join(ro_result["messages"]) + "\n"
-    general += "\nOrchestrator finished.\n"
-    yield _build_outputs(general, account_logs, cnt, running=False)
-
-
-def stop_orchestrator():
-    runner.stop()
-    general, account_logs, cnt = runner.snapshot()
-    general += "\nOrchestrator stopped by user.\n"
-    return _build_outputs(general, account_logs, cnt, running=False)
-
-
-def _build_outputs(general_log, account_logs, count, running=False):
-    """
-    Returns: [run_btn, stop_btn, dropdown, general_box, box_1, box_2, box_3, box_4]
-    """
-    btn_run = gr.update(interactive=not running, variant="primary" if not running else "secondary")
-    btn_stop = gr.update(interactive=running)
-    dropdown = gr.update(interactive=not running)
-    outputs = [btn_run, btn_stop, dropdown, general_log]
-    for i in range(1, MAX_ACCOUNTS + 1):
-        name = f"Account {i}"
-        if i <= count:
-            outputs.append(gr.update(visible=True, value=account_logs.get(name, "")))
-        else:
-            outputs.append(gr.update(visible=False, value=""))
-    return outputs
+def refresh():
+    return render_qr_images(), status_table(), progress_text(), STATE.text_logs()
 
 
 # ---------------------------------------------------------------------------
-# Build the UI
+# UI
 # ---------------------------------------------------------------------------
 
-UI_CSS = """
-.gradio-container,
-.gradio-container *:not(.qr-output textarea) {
-    font-family: 'Times New Roman', Times, serif !important;
-}
-.qr-output textarea {
-    font-family: 'Courier New', Courier, monospace !important;
-    font-size: 10px !important;
-    line-height: 1.0 !important;
-    white-space: pre !important;
-    overflow-x: auto !important;
-    letter-spacing: 0px !important;
-}
-footer { display: none !important; }
-"""
+with gr.Blocks(title="AutoWpp 2 — Disparos WhatsApp") as demo:
+    gr.Markdown("## AutoWpp 2 — Orquestrador de disparos WhatsApp (multi-conta)")
 
-def build_ui():
-    account_boxes = []
-    initial_count = len(orchestrator.ACCOUNTS)
-    initial_credor_campanha_map = {}
+    credor_campanha_map = gr.State({})
 
-    with gr.Blocks(title="WhatsApp Orchestrator") as demo:
-        gr.Markdown("# MCSA WhatsApp Multi-Account Orchestrator")
+    with gr.Row():
+        # ------------------------------------------------------------------
+        # Left column — controls (foldable sections)
+        # ------------------------------------------------------------------
+        with gr.Column(scale=1):
+            with gr.Accordion("1) Autenticação", open=True):
+                chips = gr.Slider(1, MAX_ACCOUNTS, value=1, step=1, label="Quantidade de chips")
+                auth_btn = gr.Button("Autenticar chips", variant="primary")
+                retry_auth_btn = gr.Button("🔁 Reautenticar contas com falha")
+                with gr.Row():
+                    stop_auth_btn = gr.Button("⏹️ Parar autenticação", variant="stop")
+                    unauth_btn = gr.Button("🔓 Desautenticar todos os chips", variant="stop")
 
-        with gr.Row():
-            message_input = gr.Textbox(
-                label="Mensagem",
-                placeholder="Digite a mensagem base aqui... (deixe vazio para usar a mensagem padrão do settings.py)\nUse NOME_DO_CLIENTE para personalizar com o primeiro nome do CSV.",
-                lines=8,
-                max_lines=8,
-                interactive=True,
-                scale=3,
-            )
-            csv_upload = gr.File(
-                label="Arquivo de Contatos (CSV/XLSX)",
-                file_types=[".csv", ".xlsx"],
-                type="filepath",
-                scale=1,
-            )
-        with gr.Row():
-            run_btn = gr.Button("▶  Run Disparos", variant="primary", scale=3)
-            stop_btn = gr.Button("⏹  Stop", variant="stop", interactive=False, scale=1)
-        with gr.Row():
-            account_dropdown = gr.Dropdown(
-                choices=["1", "2", "3", "4", "5", "6"],
-                value=str(initial_count),
-                label="Número de Chips",
-                interactive=True,
-                scale=1,
-            )
-            credor_campanha_state = gr.State(initial_credor_campanha_map)
-            credor_dropdown = gr.Dropdown(
-                choices=[],
-                value=None,
-                label="Credor",
-                interactive=True,
-                scale=2,
-            )
-            campanha_dropdown = gr.Dropdown(
-                choices=[],
-                value=None,
-                label="Campanha",
-                interactive=True,
-                scale=2,
-            )
+            with gr.Accordion("2) Mensagem e contatos", open=True):
+                message = gr.Textbox(
+                    label="Mensagem base (use NOME_DO_CLIENTE)",
+                    value=settings.CONTACT_MESSAGE,
+                    lines=6,
+                )
+                button_url = gr.Textbox(
+                    label="URL anexada à mensagem (opcional)", value=settings.CONTACT_BUTTON_URL
+                )
+                upload = gr.File(
+                    label="Contatos (CSV ou XLSX) — vazio = banco de dados",
+                    file_types=[".csv", ".xlsx", ".xls"],
+                )
+                sample_btn = gr.Button("Baixar modelo CSV")
+                sample_file = gr.File(label="Modelo", interactive=False)
+
+            with gr.Accordion("3) Credor / Campanha (RO)", open=True):
+                load_cc_btn = gr.Button("🗄️ Carregar Credores/Campanhas do banco")
+                credor = gr.Dropdown(
+                    label="Credor (opcional)", choices=[], value=None,
+                    allow_custom_value=True, interactive=True,
+                )
+                campanha = gr.Dropdown(
+                    label="Campanha (ex.: 000033 - Prime)", choices=[], value=None,
+                    allow_custom_value=True, interactive=True,
+                )
+                skip_ro = gr.Checkbox(label="Pular registro RO/Calltech", value=not settings.RO_ENABLED)
+                ro_btn = gr.Button("Processar RO agora")
+
             with gr.Row():
-                refresh_credor_btn = gr.Button("Refresh Credores", variant="secondary", scale=1)
-                download_cliente_btn = gr.Button("Baixar Clientes", variant="secondary", scale=1)
-        download_client_payload = gr.Textbox(visible=False)
-        download_client_filename = gr.Textbox(visible=False)
-        download_status = gr.Markdown("")
+                send_btn = gr.Button("🚀 Disparar", variant="primary", size="lg")
+                stop_send_btn = gr.Button("⏹️ Parar disparo", variant="stop", size="lg")
+            action_status = gr.Textbox(label="Status da ação", interactive=False)
 
-        with gr.Accordion("Orchestrator Log", open=False):
-            general_box = gr.Textbox(
-                label="General Output",
-                lines=32,
-                max_lines=32,
-                interactive=False,
-                buttons=["copy"],
-                elem_classes=["qr-output"],
-            )
+        # ------------------------------------------------------------------
+        # Right column — monitoring (foldable sections)
+        # ------------------------------------------------------------------
+        with gr.Column(scale=2):
+            progress = gr.Textbox(label="Progresso", interactive=False)
+            with gr.Accordion("QR Codes pendentes", open=True):
+                qr_gallery = gr.Gallery(show_label=False, columns=3, height=900)
+            with gr.Accordion("Contas", open=True):
+                table = gr.Dataframe(show_label=False, interactive=False)
+            with gr.Accordion("Logs", open=False):
+                logs = gr.Textbox(show_label=False, lines=16, interactive=False)
 
-        gr.Markdown("### Account Outputs")
-        with gr.Row():
-            for i in range(1, MAX_ACCOUNTS + 1):
-                with gr.Column(min_width=480):
-                    box = gr.Textbox(
-                        label=f"Chip {i}",
-                        lines=50,
-                        max_lines=50,
-                        interactive=False,
-                        buttons=["copy"],
-                        elem_classes=["qr-output"],
-                        visible=(i <= initial_count),
-                    )
-                    account_boxes.append(box)
+    # ----------------------------------------------------------------------
+    # Wiring
+    # ----------------------------------------------------------------------
+    auth_btn.click(start_auth, inputs=[chips], outputs=[action_status])
+    retry_auth_btn.click(retry_failed_auth, outputs=[action_status])
+    stop_auth_btn.click(stop_auth, outputs=[action_status])
+    stop_send_btn.click(stop_send, outputs=[action_status])
+    unauth_btn.click(unauth_all, outputs=[action_status])
+    send_btn.click(
+        start_dispatch,
+        inputs=[message, button_url, upload, credor, campanha, skip_ro],
+        outputs=[action_status],
+    )
+    load_cc_btn.click(
+        load_credor_campanha,
+        outputs=[credor_campanha_map, credor, campanha, action_status],
+    )
+    credor.change(
+        update_campanha_options,
+        inputs=[credor, credor_campanha_map],
+        outputs=[campanha],
+    )
+    ro_btn.click(run_ro_now, inputs=[credor, campanha], outputs=[action_status])
+    sample_btn.click(sample_csv, outputs=[sample_file])
 
-        # --- Wiring ---
-        all_outputs = [run_btn, stop_btn, account_dropdown, general_box] + account_boxes
+    timer = gr.Timer(2.0)
+    timer.tick(refresh, outputs=[qr_gallery, table, progress, logs])
 
-        account_dropdown.change(
-            fn=on_account_count_change,
-            inputs=[account_dropdown],
-            outputs=account_boxes,
-        )
-
-        credor_dropdown.change(
-            fn=update_campanha_dropdown,
-            inputs=[credor_dropdown, credor_campanha_state],
-            outputs=[campanha_dropdown],
-        )
-
-        refresh_credor_btn.click(
-            fn=refresh_credor_campanha_options,
-            inputs=[],
-            outputs=[credor_campanha_state, credor_dropdown, campanha_dropdown],
-        )
-
-        download_event = download_cliente_btn.click(
-            fn=download_client_list,
-            inputs=[credor_dropdown, campanha_dropdown],
-            outputs=[download_client_payload, download_client_filename, download_status],
-        )
-        download_event.then(
-            fn=None,
-            inputs=[download_client_payload, download_client_filename],
-            outputs=[],
-            js="""
-            (payloadB64, filename) => {
-                if (!payloadB64 || !filename) {
-                    return [];
-                }
-
-                const binary = atob(payloadB64);
-                const bytes = new Uint8Array(binary.length);
-                for (let i = 0; i < binary.length; i++) {
-                    bytes[i] = binary.charCodeAt(i);
-                }
-
-                const blob = new Blob(
-                    [bytes],
-                    {
-                        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-                    }
-                );
-                const url = URL.createObjectURL(blob);
-                const link = document.createElement('a');
-                link.href = url;
-                link.download = filename;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                setTimeout(() => URL.revokeObjectURL(url), 1000);
-                return [];
-            }
-            """,
-        )
-
-        run_btn.click(
-            fn=run_orchestrator,
-            inputs=[account_dropdown, message_input, csv_upload, credor_dropdown, campanha_dropdown],
-            outputs=all_outputs,
-        )
-
-        stop_btn.click(
-            fn=stop_orchestrator,
-            inputs=[],
-            outputs=all_outputs,
-        )
-
-    return demo
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    demo = build_ui()
-    demo.launch(
-        share=True,
-        favicon_path="src/icon.png",
-        server_port=8502,
-        theme=gr.themes.Soft(),
-        css=UI_CSS,
-    )
+    demo.launch(server_name=settings.FRONTEND_HOST, server_port=settings.FRONTEND_PORT, show_error=True)

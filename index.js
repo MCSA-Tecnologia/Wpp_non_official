@@ -50,27 +50,29 @@ console.log(`╚═════════════════════�
 const contactsPath = path.join(__dirname, contactsFile);
 let contacts = [];
 
-const SHEET_ID = requireEnv('GOOGLE_SHEET_ID');
-const SHEET_RANGE = requireEnv('GOOGLE_SHEET_RANGE');
 const TOKEN_PATH = path.join(__dirname, 'token.json');
 const CREDENTIALS_PATH = path.join(__dirname, 'Tetrakey.json');
 
-// Error reporting configuration
-const ERROR_REPORT_URL = requireEnv('ERROR_REPORT_URL');
-const ERROR_REPORT_AUTH_TOKEN = requireEnv('ERROR_REPORT_AUTH_TOKEN');
-const ERROR_REPORT_HEADER_KEY = requireEnv('ERROR_REPORT_HEADER_KEY');
-const ERROR_REPORT_HEADER_VALUE = requireEnv('ERROR_REPORT_HEADER_VALUE');
-
 async function reportError(phone) {
     const today = new Date().toISOString().split('T')[0];
+    const reportUrl = process.env.ERROR_REPORT_URL;
+    const authToken = process.env.ERROR_REPORT_AUTH_TOKEN;
+    const headerKey = process.env.ERROR_REPORT_HEADER_KEY;
+    const headerValue = process.env.ERROR_REPORT_HEADER_VALUE;
+
+    if (!reportUrl || !authToken || !headerKey || !headerValue) {
+        console.warn(`[${accountId}] Error report skipped for ${phone}: reporting env vars are incomplete.`);
+        return;
+    }
+
     try {
-        await axios.post(ERROR_REPORT_URL, {
+        await axios.post(reportUrl, {
             data: phone,
             exdata: today
         }, {
             headers: {
-                [ERROR_REPORT_HEADER_KEY]: ERROR_REPORT_HEADER_VALUE,
-                'Authorization': `Bearer ${ERROR_REPORT_AUTH_TOKEN}`,
+                [headerKey]: headerValue,
+                'Authorization': `Bearer ${authToken}`,
                 'Content-Type': 'application/json'
             }
         });
@@ -225,6 +227,8 @@ let sheetsClientPromise;
 async function getSheetsClient() {
     if (!sheetsClientPromise) {
         sheetsClientPromise = (async () => {
+            requireEnv('GOOGLE_SHEET_ID');
+            requireEnv('GOOGLE_SHEET_RANGE');
             const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
             const token = JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf8'));
             const { client_id, client_secret, redirect_uris } = credentials.installed || credentials.web;
@@ -239,12 +243,14 @@ async function getSheetsClient() {
 async function appendLeadToSheet(phoneNumber, cpf, email) {
     try {
         const sheets = await getSheetsClient();
+        const sheetId = requireEnv('GOOGLE_SHEET_ID');
+        const sheetRange = requireEnv('GOOGLE_SHEET_RANGE');
         const now = new Date();
         const pad = (value) => String(value).padStart(2, '0');
         const timestamp = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${String(now.getFullYear()).slice(-2)} - ${pad(now.getHours())}:${pad(now.getMinutes())}`;
         await sheets.spreadsheets.values.append({
-            spreadsheetId: SHEET_ID,
-            range: SHEET_RANGE,
+            spreadsheetId: sheetId,
+            range: sheetRange,
             valueInputOption: 'USER_ENTERED',
             requestBody: {
                 values: [[phoneNumber, cpf, email, timestamp]]
@@ -257,19 +263,24 @@ async function appendLeadToSheet(phoneNumber, cpf, email) {
     }
 }
 
-const SUCCESS_REPORT_URL = requireEnv('SUCCESS_REPORT_URL');
-const SUCCESS_REPORT_HEADER_KEY = requireEnv('SUCCESS_REPORT_HEADER_KEY');
-const SUCCESS_REPORT_HEADER_VALUE = requireEnv('SUCCESS_REPORT_HEADER_VALUE');
-
 async function reportSuccess(phoneNumber, cpf, timestamp) {
+    const reportUrl = process.env.SUCCESS_REPORT_URL;
+    const headerKey = process.env.SUCCESS_REPORT_HEADER_KEY;
+    const headerValue = process.env.SUCCESS_REPORT_HEADER_VALUE;
+
+    if (!reportUrl || !headerKey || !headerValue) {
+        console.warn(`[${accountId}] Success report skipped for ${phoneNumber}: reporting env vars are incomplete.`);
+        return;
+    }
+
     try {
-        await axios.post(SUCCESS_REPORT_URL, {
+        await axios.post(reportUrl, {
             telefone: phoneNumber,
             cpf_cnpj: cpf,
             time: timestamp
         }, {
             headers: {
-                [SUCCESS_REPORT_HEADER_KEY]: SUCCESS_REPORT_HEADER_VALUE,
+                [headerKey]: headerValue,
                 'Content-Type': 'application/json'
             }
         });
@@ -454,6 +465,37 @@ client.on('authenticated', () => console.log(`[${accountId}] ✅ Authenticated s
 
 client.on('disconnected', (reason) => console.log(`[${accountId}] Disconnected:`, reason));
 
+function isRetryableInitializationError(error) {
+    const message = String(error?.message || error || '');
+    return message.includes('Execution context was destroyed')
+        || message.includes('Protocol error (Runtime.callFunctionOn)');
+}
+
+async function initializeClientWithRetry(maxAttempts = 3) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            await client.initialize();
+            return;
+        } catch (error) {
+            console.error(`[${accountId}] WhatsApp client initialization failed (attempt ${attempt}/${maxAttempts}):`, error.message || error);
+
+            if (!isRetryableInitializationError(error) || attempt === maxAttempts) {
+                process.exit(1);
+            }
+
+            try {
+                await client.destroy();
+            } catch (destroyError) {
+                console.error(`[${accountId}] Failed to clean up browser before retry:`, destroyError.message || destroyError);
+            }
+
+            const delayMs = 2000 * attempt;
+            console.log(`[${accountId}] Retrying WhatsApp client initialization in ${delayMs / 1000}s...`);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+    }
+}
+
 if (!isOneShotMode && !noReply) {
     const leadCapture = new Map();
     const MAX_WRONG_ANSWERS = 3;
@@ -518,7 +560,7 @@ if (!isOneShotMode && !noReply) {
 }
 
 console.log(`[${accountId}] 🚀 Starting WhatsApp client...\n`);
-client.initialize();
+initializeClientWithRetry();
 
 if (isOneShotMode) {
     setTimeout(() => { console.error(`[${accountId}] ⏱️  Timeout (60s)`); process.exit(1); }, 60000);
