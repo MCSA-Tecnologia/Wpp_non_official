@@ -1,6 +1,6 @@
 # Operação da plataforma distribuída
 
-Este documento descreve a nova plataforma. O fluxo antigo em Gradio continua no repositório apenas como legado; ele não participa desta implantação.
+Este documento descreve a plataforma atual e seu processo de implantação.
 
 ## Componentes
 
@@ -33,8 +33,9 @@ Pré-requisitos: Docker Desktop ou Docker Engine com Compose v2.
 docker compose --env-file .env.scaled up -d --build
 ```
 
-4. Abra `http://localhost:8080`, entre com o administrador configurado, defina o teto diário por chip e clique em **Criar ou completar 30 chips**.
-5. Ative somente um chip por vez e escaneie o QR. O chip só fica `ready` após a sessão e o número serem confirmados pelo WhatsApp.
+4. Abra `http://localhost:8080`, entre com o administrador configurado, defina o teto diário por chip e configure o card global da mensagem.
+5. Clique em **Criar ou completar 30 chips**.
+6. Ative somente um chip por vez e escaneie o QR. O chip só fica `ready` após a sessão e o número serem confirmados pelo WhatsApp.
 
 Não existe conector simulado no runtime. Toda confirmação final de campanha representa envio real. Para desligar sem apagar os volumes:
 
@@ -73,9 +74,10 @@ A dependência Baileys está fixada no `worker/package-lock.json`; atualizaçõe
 
 1. Troque a senha bootstrap e nunca publique os valores padrão do Compose.
 2. Configure no painel o teto por chip (por exemplo, 35/chip/dia), janela e fuso.
-3. Crie os 30 registros de conta.
-4. Ative um chip, abra o QR e escaneie pelo WhatsApp.
-5. Faça um canário com esse único chip e um número controlado antes de ativar os demais.
+3. Configure o card global com imagem JPG/PNG, texto e URL HTTPS.
+4. Crie os 30 registros de conta.
+5. Ative um chip, abra o QR e escaneie pelo WhatsApp.
+6. Faça um canário com esse único chip e um número controlado antes de ativar os demais.
 
 Uma campanha pode estar ativa por vez. Jobs adicionais ficam agendados. O agendador usa somente contas `ready`, balanceia pela disponibilidade e volume enviado, aplica jitter de 70%–130% e leva excesso para a próxima janela útil.
 
@@ -98,7 +100,7 @@ O botão de query executa exclusivamente `backend/app/sql/contact_export.sql`, c
 - `GET /health/live`: processo ativo.
 - `GET /health/ready`: banco acessível.
 - `GET /metrics`: métricas Prometheus por estado de chip e job.
-- Logs de contêiner: `docker compose logs -f api worker`.
+- Logs de contêiner: `docker compose --env-file .env.scaled logs -f api worker-node-1 worker-node-2`.
 
 Configure alertas externos para QR/offline por mais de 2 minutos, fila sem progresso por 5 minutos, taxa de erro acima de 5% em 15 minutos e ausência de heartbeat. Faça backups automáticos do PostgreSQL com retenção e teste a restauração em outro banco antes da liberação. Redis não substitui backup.
 

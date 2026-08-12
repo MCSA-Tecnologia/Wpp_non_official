@@ -1,37 +1,28 @@
-/.wwebjs_auth
-/.wwebjs_cache
-/node_modules
-web/node_modules/
-web/dist/
-web/*.tsbuildinfo
-web/vite.config.js
-web/vite.config.d.ts
-worker/node_modules/
-worker/dist/
-backend/.pytest_cache/
-backend/.ruff_cache/
-backend/.venv/
-backend/*.egg-info/
-backend/**/__pycache__/
+# Segredos locais
+.env
+.env.*
+!.env.scaled.example
+
+# Python
+**/__pycache__/
+*.py[cod]
+**/.venv/
+**/.pytest_cache/
+**/.ruff_cache/
+**/*.egg-info/
 .coverage
-.env.scaled
-/backups/
-/.idea
-contacts - Copia.json
-TetraKey.json
-token.json
-package-lock.json
-package.json
-contacts.json
-.env
-.env
-__pycache__/settings.cpython-313.pyc
-/__pycache__
-/src/authStrategies
-/whatsapp-web.js
-/logs
-/similar project
-contacts.json.prev
-contacts.test.json
-.gradio/certificate.pem
-/runtime
+htmlcov/
+
+# Node / frontend
+**/node_modules/
+**/dist/
+**/*.tsbuildinfo
+
+# IDE e sistema
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Dados operacionais locais
+backups/
