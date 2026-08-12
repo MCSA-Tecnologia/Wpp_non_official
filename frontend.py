@@ -6,9 +6,9 @@ Flow:
      for each account; scan them in WhatsApp > Aparelhos conectados.
      Accounts that fail are retried automatically (new QR); a manual
      "Reautenticar contas com falha" button covers anything left over.
-  2. Write the base message, upload the CSV/XLSX (optional — falls back to
-     the database), pick Credor/Campanha (button loads both from SQL Server)
-     and click "2) Disparar".
+  2. Write the base message and upload the CSV/XLSX. The Credor/Campanha
+     columns on each contact are used for RO registration. Then click
+     "2) Disparar".
   3. Follow the live progress table; RO runs automatically at the end.
 
 Run:  python frontend.py   →  http://127.0.0.1:8502
@@ -25,7 +25,6 @@ import qrcode
 
 import settings
 import orchestrator
-import contacts_loader
 import ro_service
 
 RUNTIME_DIR = orchestrator.RUNTIME_DIR
@@ -215,7 +214,7 @@ def unauth_all():
     return f"Desautenticando {len(targets)} chip(s) — acompanhe nos logs."
 
 
-def start_dispatch(message: str, button_url: str, upload, credor: str, campanha: str, skip_ro: bool):
+def start_dispatch(message: str, button_url: str, upload, skip_ro: bool):
     if STATE.busy:
         return "Ocupado — aguarde a operação atual."
     if not STATE.authenticated:
@@ -224,12 +223,6 @@ def start_dispatch(message: str, button_url: str, upload, credor: str, campanha:
     csv_path = None
     if upload is not None:
         csv_path = upload if isinstance(upload, str) else getattr(upload, "name", None)
-
-    ro_context = {}
-    if campanha:
-        ro_context["codigoCampanha"] = campanha
-    if credor:
-        ro_context["parceiro"] = f"{settings.RO_PARCEIRO} - {credor}"
 
     STATE.busy = True
     STATE.phase = "sending"
@@ -247,7 +240,6 @@ def start_dispatch(message: str, button_url: str, upload, credor: str, campanha:
                 message=message or None,
                 button_url=button_url if button_url is not None else None,
                 skip_ro=skip_ro,
-                ro_context=ro_context or None,
                 log=STATE.log,
                 progress_cb=progress_cb,
                 preauthenticated=STATE.authenticated,
@@ -266,49 +258,12 @@ def start_dispatch(message: str, button_url: str, upload, credor: str, campanha:
 
 
 # ---------------------------------------------------------------------------
-# Credor / Campanha (SQL Server)
+# RO
 # ---------------------------------------------------------------------------
 
-def load_credor_campanha():
-    """Button handler: query the database and fill both dropdowns."""
+def run_ro_now():
     try:
-        mapping = contacts_loader.fetch_credor_campanha()
-    except Exception as exc:
-        STATE.log(f"Erro ao buscar credores/campanhas: {exc}")
-        return (
-            {},
-            gr.update(),
-            gr.update(),
-            f"Erro ao consultar o banco: {exc}",
-        )
-
-    credores = sorted(mapping.keys())
-    selected_credor = credores[0] if credores else None
-    campanhas = mapping.get(selected_credor, []) if selected_credor else []
-    selected_campanha = campanhas[0] if campanhas else None
-
-    STATE.log(f"Credores/campanhas carregados do banco: {len(credores)} credores.")
-    return (
-        mapping,
-        gr.update(choices=credores, value=selected_credor),
-        gr.update(choices=campanhas, value=selected_campanha),
-        f"{len(credores)} credores carregados do banco.",
-    )
-
-
-def update_campanha_options(selected_credor, mapping):
-    campanhas = (mapping or {}).get(selected_credor, [])
-    return gr.update(choices=campanhas, value=campanhas[0] if campanhas else None)
-
-
-def run_ro_now(credor: str, campanha: str):
-    context = {}
-    if campanha:
-        context["codigoCampanha"] = campanha
-    if credor:
-        context["parceiro"] = f"{settings.RO_PARCEIRO} - {credor}"
-    try:
-        result = ro_service.process_ro_after_run(context=context or None, run_completed=True)
+        result = ro_service.process_ro_after_run(run_completed=True)
         for message in result.get("messages", []):
             STATE.log(f"RO: {message}")
         return (
@@ -323,10 +278,10 @@ def run_ro_now(credor: str, campanha: str):
 def sample_csv():
     df = pd.DataFrame(
         [
-            ["Maria Silva", "31999999999", "12345", "maria@email.com", "Cliente prioritário"],
-            ["João Souza", "41988888888", "67890", "joao@email.com", "Carteira B"],
+            ["Maria Silva", "31999999999", "12345", "maria@email.com", "Cliente prioritário", "Acme", "000033 - Prime"],
+            ["João Souza", "41988888888", "67890", "joao@email.com", "Carteira B", "Acme", "000074 - Carteira B"],
         ],
-        columns=["Nome", "Telefone", "pessoaId", "email", "observacao"],
+        columns=["Nome", "Telefone", "pessoaId", "email", "observacao", "Credor", "Campanha"],
     )
     target = Path("samples") / "modelo_contatos.csv"
     target.parent.mkdir(exist_ok=True)
@@ -344,8 +299,6 @@ def refresh():
 
 with gr.Blocks(title="AutoWpp 2 — Disparos WhatsApp") as demo:
     gr.Markdown("## AutoWpp 2 — Orquestrador de disparos WhatsApp (multi-conta)")
-
-    credor_campanha_map = gr.State({})
 
     with gr.Row():
         # ------------------------------------------------------------------
@@ -376,15 +329,10 @@ with gr.Blocks(title="AutoWpp 2 — Disparos WhatsApp") as demo:
                 sample_btn = gr.Button("Baixar modelo CSV")
                 sample_file = gr.File(label="Modelo", interactive=False)
 
-            with gr.Accordion("3) Credor / Campanha (RO)", open=True):
-                load_cc_btn = gr.Button("🗄️ Carregar Credores/Campanhas do banco")
-                credor = gr.Dropdown(
-                    label="Credor (opcional)", choices=[], value=None,
-                    allow_custom_value=True, interactive=True,
-                )
-                campanha = gr.Dropdown(
-                    label="Campanha (ex.: 000033 - Prime)", choices=[], value=None,
-                    allow_custom_value=True, interactive=True,
+            with gr.Accordion("3) Registro RO/Calltech", open=True):
+                gr.Markdown(
+                    "Os valores de **Credor** e **Campanha** são lidos das colunas "
+                    "correspondentes no CSV/XLSX de cada contato."
                 )
                 skip_ro = gr.Checkbox(label="Pular registro RO/Calltech", value=not settings.RO_ENABLED)
                 ro_btn = gr.Button("Processar RO agora")
@@ -416,19 +364,10 @@ with gr.Blocks(title="AutoWpp 2 — Disparos WhatsApp") as demo:
     unauth_btn.click(unauth_all, outputs=[action_status])
     send_btn.click(
         start_dispatch,
-        inputs=[message, button_url, upload, credor, campanha, skip_ro],
+        inputs=[message, button_url, upload, skip_ro],
         outputs=[action_status],
     )
-    load_cc_btn.click(
-        load_credor_campanha,
-        outputs=[credor_campanha_map, credor, campanha, action_status],
-    )
-    credor.change(
-        update_campanha_options,
-        inputs=[credor, credor_campanha_map],
-        outputs=[campanha],
-    )
-    ro_btn.click(run_ro_now, inputs=[credor, campanha], outputs=[action_status])
+    ro_btn.click(run_ro_now, outputs=[action_status])
     sample_btn.click(sample_csv, outputs=[sample_file])
 
     timer = gr.Timer(2.0)

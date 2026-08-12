@@ -1,0 +1,55 @@
+name: autowpp-node
+
+# Execute este arquivo em cada nó Linux. PostgreSQL e Redis devem ser externos
+# e compartilhados. Use AUTOWPP_NODE_ID e AUTOWPP_WORKER_ID exclusivos por nó.
+services:
+  api:
+    image: ${AUTOWPP_API_IMAGE:-autowpp-api:3.0.0}
+    build: ./backend
+    environment:
+      AUTOWPP_ENVIRONMENT: production
+      AUTOWPP_DATABASE_URL: ${AUTOWPP_DATABASE_URL}
+      AUTOWPP_REDIS_URL: ${AUTOWPP_REDIS_URL}
+      AUTOWPP_JWT_SECRET: ${AUTOWPP_JWT_SECRET}
+      AUTOWPP_ENCRYPTION_KEY: ${AUTOWPP_ENCRYPTION_KEY}
+      AUTOWPP_WORKER_TOKEN: ${AUTOWPP_WORKER_TOKEN}
+      AUTOWPP_BOOTSTRAP_ADMIN_EMAIL: ${AUTOWPP_BOOTSTRAP_ADMIN_EMAIL}
+      AUTOWPP_BOOTSTRAP_ADMIN_PASSWORD: ${AUTOWPP_BOOTSTRAP_ADMIN_PASSWORD}
+      AUTOWPP_COOKIE_SECURE: "true"
+      AUTOWPP_CORS_ORIGINS: ${AUTOWPP_CORS_ORIGINS}
+      AUTOWPP_SOURCE_SQL_SERVER: ${AUTOWPP_SOURCE_SQL_SERVER:-}
+      AUTOWPP_SOURCE_SQL_DATABASE: ${AUTOWPP_SOURCE_SQL_DATABASE:-}
+      AUTOWPP_SOURCE_SQL_USERNAME: ${AUTOWPP_SOURCE_SQL_USERNAME:-}
+      AUTOWPP_SOURCE_SQL_PASSWORD: ${AUTOWPP_SOURCE_SQL_PASSWORD:-}
+      AUTOWPP_RO_ENABLED: ${AUTOWPP_RO_ENABLED:-false}
+      AUTOWPP_RO_ENDPOINT: ${AUTOWPP_RO_ENDPOINT:-}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  web:
+    image: ${AUTOWPP_WEB_IMAGE:-autowpp-web:3.0.0}
+    build: ./web
+    ports:
+      - "${AUTOWPP_HTTP_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    image: ${AUTOWPP_WORKER_IMAGE:-autowpp-worker:3.0.0}
+    build: ./worker
+    environment:
+      AUTOWPP_API_URL: http://api:8000/api/v1
+      AUTOWPP_WORKER_TOKEN: ${AUTOWPP_WORKER_TOKEN}
+      AUTOWPP_WORKER_ID: ${AUTOWPP_WORKER_ID}
+      AUTOWPP_NODE_ID: ${AUTOWPP_NODE_ID}
+      AUTOWPP_WORKER_CAPACITY: ${AUTOWPP_WORKER_CAPACITY:-15}
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped

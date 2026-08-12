@@ -92,7 +92,10 @@ def derive_campanha_id(codigo_campanha: str) -> int:
 
 
 def build_historico(context: dict[str, Any], contact: dict[str, Any]) -> str:
-    parceiro = str(context.get("parceiro") or settings.RO_PARCEIRO)
+    credor = str(contact.get("credor") or "").strip()
+    parceiro = f"{settings.RO_PARCEIRO} - {credor}" if credor else str(
+        context.get("parceiro") or settings.RO_PARCEIRO
+    )
     telefone = normalize_phone(contact.get("phone")).replace("+55", "", 1).replace("+", "")
     message = str(contact.get("message") or "")
     button_url = str(contact.get("buttonUrl") or "").strip()
@@ -108,7 +111,9 @@ def build_payload_item(context: dict[str, Any], contact: dict[str, Any]) -> dict
     if pessoa_id in (None, ""):
         raise ValueError(f"Contato {contact.get('phone')} sem pessoaId para registrar no RO.")
 
-    codigo_campanha = extract_codigo_campanha(context.get("codigoCampanha"))
+    codigo_campanha = extract_codigo_campanha(
+        contact.get("campanha") or context.get("codigoCampanha")
+    )
     data_inicio = to_calltech_timestamp(contact.get("sentAt"))
     data_fim = to_calltech_timestamp(contact.get("deliveredAt") or contact.get("sentAt"))
 

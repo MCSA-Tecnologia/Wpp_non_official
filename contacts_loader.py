@@ -33,6 +33,8 @@ NAME_COLUMNS = ("nome", "cliente", "name")
 PESSOA_COLUMNS = ("pessoaid", "pessoas_id", "moinadimplentesid")
 EMAIL_COLUMNS = ("email", "e-mail")
 OBS_COLUMNS = ("observacao", "obs")
+CREDOR_COLUMNS = ("credor",)
+CAMPANHA_COLUMNS = ("campanha",)
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +217,8 @@ def build_queue(
     pessoa_col = _find_column(df, PESSOA_COLUMNS)
     email_col = _find_column(df, EMAIL_COLUMNS)
     obs_col = _find_column(df, OBS_COLUMNS)
+    credor_col = _find_column(df, CREDOR_COLUMNS)
+    campanha_col = _find_column(df, CAMPANHA_COLUMNS)
 
     already_sent_today = _load_previous_sent_today()
 
@@ -257,6 +261,8 @@ def build_queue(
                 "pessoaId": pessoa_id,
                 "email": str(row.get(email_col) or "").strip() if email_col else "",
                 "observacao": str(row.get(obs_col) or "").strip() if obs_col else "",
+                "credor": str(row.get(credor_col) or "").strip() if credor_col else "",
+                "campanha": str(row.get(campanha_col) or "").strip() if campanha_col else "",
                 "roRegistered": False,
                 "roRegisteredAt": None,
                 "roBatchId": None,

@@ -1,3 +1,3 @@
-Nome,Telefone,pessoaId,email,observacao
-Maria Silva,31999999999,12345,maria@email.com,Cliente prioritário
-João Souza,41988888888,67890,joao@email.com,Carteira B
+pessoaId,Nome,email,Telefone,observacao,Credor,Campanha
+12345,Maria Silva,maria@email.com,31999999999,Cliente prioritário,Acme,000033 - Prime
+67890,João Souza,joao@email.com,41988888888,Carteira B,Acme,000074 - Carteira B

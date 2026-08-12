@@ -1,0 +1,15 @@
+.git
+.idea
+.agents
+.wwebjs_auth
+.wwebjs_cache
+node_modules
+**/node_modules
+**/dist
+**/__pycache__
+.pytest_cache
+logs
+runtime
+.env
+contacts.json*
+

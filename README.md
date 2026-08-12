@@ -1,5 +1,15 @@
 # AutoWpp 2
 
+> **Nova plataforma distribuída (v3):** a implementação para 30 chips reais com teto diário individual está em `backend/`, `web/` e `worker/`. Ela usa FastAPI, React/Vite, PostgreSQL, Redis e Baileys, com execução por Docker. Consulte [DEPLOYMENT.md](DEPLOYMENT.md) para instalação local, produção em dois nós, recuperação e validação. O fluxo Gradio descrito abaixo permanece como legado durante a transição.
+
+Inicialização rápida da operação real via Baileys:
+
+```bash
+docker compose --env-file .env.scaled up -d --build
+```
+
+Painel: `http://localhost:8080`. Antes do primeiro uso, copie `.env.scaled.example` para `.env.scaled`, substitua todos os segredos e configure no painel o teto diário por chip e o card global da mensagem (imagem JPG/PNG, texto e URL HTTPS). Novas campanhas permanecem bloqueadas enquanto o card estiver incompleto. Os chips nascem inativos e só ficam prontos depois da autenticação individual por QR.
+
 Orquestrador de disparos no WhatsApp com múltiplas contas (1–6 chips), interface web em Gradio, distribuição automática de contatos e pós-processamento RO/Calltech.
 
 Reescrita do projeto original com a mesma lógica de negócio, porém com arquitetura corrigida e simplificada:
@@ -90,16 +100,17 @@ Todos os valores têm default — o projeto roda com `.env` vazio usando arquivo
 Colunas reconhecidas (case-insensitive, sem acento):
 
 - `Telefone` (obrigatória) — aceita `31 9137-6705`, `31991376705`, `5531991376705`, `+55...`
-- `Nome` (opcional) — usado no placeholder `NOME_DO_CLIENTE` (só o primeiro nome)
+- `Nome` (opcional) — usado no placeholder `NOME_DO_CLIENTE` (primeiro e último nomes)
 - `pessoaId` / `Pessoas_ID` / `MoInadimplentesID` (opcional — **necessário para RO**)
 - `email`, `observacao` (opcionais)
+- `Credor`, `Campanha` (obrigatórias na plataforma v3 e usadas no registro RO)
 
 Exemplo (`samples/modelo_contatos.csv`):
 
 ```csv
-Nome,Telefone,pessoaId,email,observacao
-Maria Silva,31999999999,12345,maria@email.com,Cliente prioritário
-João Souza,41988888888,67890,joao@email.com,Carteira B
+pessoaId,Nome,email,Telefone,observacao,Credor,Campanha
+12345,Maria Silva,maria@email.com,31999999999,Cliente prioritário,Acme,000033 - Prime
+67890,João Souza,joao@email.com,41988888888,Carteira B,Acme,000074 - Carteira B
 ```
 
 Regras aplicadas na carga:
@@ -119,7 +130,7 @@ python frontend.py
 ```
 
 1. Escolha a quantidade de chips e clique em **1) Autenticar chips** — escaneie os QR Codes exibidos (WhatsApp → Aparelhos conectados). Sessões ficam salvas em `.wwebjs_auth/`; nas próximas execuções não pede QR.
-2. Ajuste a mensagem base (`NOME_DO_CLIENTE` é substituído pelo primeiro nome), envie o arquivo de contatos (ou deixe vazio para carregar do banco), preencha Credor/Campanha.
+2. Ajuste a mensagem base (`NOME_DO_CLIENTE` usa o primeiro e o último nomes; `CREDOR` usa o valor da coluna `Credor`) e envie o arquivo de contatos. Os valores de `Credor` e `Campanha` também são usados no registro RO.
 3. Clique em **2) Disparar** e acompanhe QRs, tabela de contas, progresso e logs em tempo real.
 4. Ao final, o RO roda automaticamente (a menos que "Pular RO" esteja marcado). O botão **Processar RO agora** reprocessa pendências a qualquer momento.
 
@@ -169,6 +180,8 @@ node bot/index.js account_1 send contacts.json   # envia os contatos atribuídos
   "pessoaId": "12345",
   "email": "maria@email.com",
   "observacao": "Cliente prioritário",
+  "credor": "Acme",
+  "campanha": "000033 - Prime",
   "roRegistered": true,
   "roRegisteredAt": "2026-07-10T15:40:00+00:00",
   "roBatchId": "RO-20260710-124000-001",
