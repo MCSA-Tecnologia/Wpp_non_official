@@ -105,12 +105,70 @@ export interface RuntimeSettings {
   timezone: string;
 }
 
+export interface SourceDatabaseSettings {
+  server_old: string;
+  database_old: string;
+  username_old: string;
+  password_configured: boolean;
+  configured: boolean;
+}
+
 export interface MessageCardSettings {
   text: string;
   url: string;
   image_asset_id: string | null;
   image_url: string | null;
+  show_url: boolean;
   revision: string;
   configured: boolean;
   updated_at: string | null;
+}
+
+export interface MessageGenerationSettings {
+  api_key_configured: boolean;
+  model: string;
+}
+
+export interface MessageVariationResponse {
+  original: string;
+  variations: string[];
+}
+
+export interface DashboardEvent {
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface CampaignDraft {
+  version: 1;
+  batch_id: string | null;
+  interval_mean_minutes: number;
+  name: string;
+  message: string;
+  message_variations?: string[];
+  message_variations_source?: string;
+}
+
+export interface RuntimeSettingsDraft extends RuntimeSettings {
+  version: 1;
+}
+
+export interface MessageCardDraft {
+  version: 1;
+  text: string;
+  url: string;
+  show_url: boolean;
+}
+
+export interface SourceDatabaseDraft {
+  version: 1;
+  server_old: string;
+  database_old: string;
+  username_old: string;
+}
+
+export interface NewUserDraft {
+  version: 1;
+  email: string;
+  role: Role;
 }

@@ -25,14 +25,29 @@ export interface ClaimedJob {
   card_text: string;
   card_url: string;
   card_asset_id: string;
+  card_show_url: boolean;
   contact_name: string;
 }
 
-export interface MessageCard {
-  text: string;
-  url: string;
-  image: Uint8Array;
-}
+export type OutboundMessage =
+  | {
+      format: "custom_native_link";
+      text: string;
+      url: string;
+      title: string;
+      thumbnail: Uint8Array;
+    }
+  | {
+      format: "native_link_fallback";
+      text: string;
+    }
+  | {
+      format: "interactive_link";
+      text: string;
+      url: string;
+      title: string;
+      thumbnail?: Uint8Array;
+    };
 
 export interface AuthRecord {
   category: string;
@@ -50,6 +65,6 @@ export interface WhatsAppConnector {
   connect(): Promise<void>;
   isReady(): boolean;
   validateRecipient(phone: string): Promise<boolean>;
-  send(phone: string, message: string, card: MessageCard): Promise<string>;
+  send(phone: string, message: OutboundMessage): Promise<string>;
   close(): Promise<void>;
 }

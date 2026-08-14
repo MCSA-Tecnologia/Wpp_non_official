@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import secrets
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -21,7 +22,7 @@ from ..models import (
 from ..schemas import CampaignCreate
 from .imports import canonical_row, map_columns
 from .message_card import require_message_card
-
+from .message_variations import validate_message_variations
 
 PLACEHOLDER_PATTERN = re.compile(
     r"(?P<name>(?i:NOME\s*_?\s*DO\s*_?\s*CLIENTE))|(?P<creditor>\bCREDOR\b)"
@@ -84,16 +85,24 @@ def create_campaign(
     )
     db.add(campaign)
     db.flush()
-    variant = MessageVariant(
-        campaign_id=campaign.id,
-        body=payload.message,
-        card_text=card["text"],
-        card_url=card["url"],
-        card_asset_id=card["image_asset_id"],
-        weight=100,
-        active=True,
-    )
-    db.add(variant)
+    message_bodies = [
+        payload.message,
+        *validate_message_variations(payload.message, payload.message_variations),
+    ]
+    variants: list[MessageVariant] = []
+    for body in message_bodies:
+        variant = MessageVariant(
+            campaign_id=campaign.id,
+            body=body,
+            card_text=card["text"],
+            card_url=card["url"],
+            card_asset_id=card["image_asset_id"],
+            card_show_url=card["show_url"],
+            weight=100,
+            active=True,
+        )
+        db.add(variant)
+        variants.append(variant)
     db.flush()
 
     valid_rows = list(
@@ -126,7 +135,7 @@ def create_campaign(
                 idempotency_key=f"{campaign.id}:{contact.id}",
                 campaign_id=campaign.id,
                 contact_id=contact.id,
-                variant_id=variant.id,
+                variant_id=secrets.choice(variants).id,
                 state=JobState.pending,
             )
         )
@@ -141,7 +150,12 @@ def create_campaign(
             action="campaign.created",
             entity_type="campaign",
             entity_id=str(campaign.id),
-            details={"contacts": len(valid_rows), "source": batch.filename},
+            details={
+                "contacts": len(valid_rows),
+                "source": batch.filename,
+                "variation_count": len(payload.message_variations),
+                "message_pool_size": len(variants),
+            },
         )
     )
     if commit:

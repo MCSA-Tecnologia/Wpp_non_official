@@ -41,8 +41,8 @@ class AccountCreate(BaseModel):
 
 
 class AccountBulkCreate(BaseModel):
-    count: int = Field(ge=1, le=30)
-    prefix: str = "chip"
+    count: int = Field(ge=1, le=1000)
+    prefix: str = Field(default="chip", min_length=1, max_length=48, pattern=r"^[a-z0-9_-]+$")
 
 
 class AccountOut(ORMModel):
@@ -108,6 +108,7 @@ class CampaignCreate(BaseModel):
     name: str = Field(min_length=1, max_length=180)
     import_id: uuid.UUID
     message: str = Field(min_length=1)
+    message_variations: list[str] = Field(default_factory=list, max_length=20)
     card_revision: str = Field(default="", max_length=64)
     interval_mean_minutes: float = Field(ge=0, le=30)
     confirmed_real_send: bool = False
@@ -157,11 +158,46 @@ class SettingUpdate(BaseModel):
     timezone: str = "America/Sao_Paulo"
 
 
+class SourceDatabaseUpdate(BaseModel):
+    server_old: str = Field(min_length=1, max_length=255)
+    database_old: str = Field(min_length=1, max_length=255)
+    username_old: str = Field(min_length=1, max_length=255)
+    password_old: str = Field(default="", max_length=1024)
+
+
+class SourceDatabaseOut(BaseModel):
+    server_old: str = ""
+    database_old: str = ""
+    username_old: str = ""
+    password_configured: bool = False
+    configured: bool = False
+
+
+class MessageGenerationSettingsUpdate(BaseModel):
+    api_key: str = Field(default="", max_length=1024)
+
+
+class MessageGenerationSettingsOut(BaseModel):
+    api_key_configured: bool = False
+    model: str
+
+
+class MessageVariationGenerateRequest(BaseModel):
+    original: str = Field(min_length=1, max_length=10000)
+    count: int = Field(ge=1, le=20)
+
+
+class MessageVariationGenerateOut(BaseModel):
+    original: str
+    variations: list[str]
+
+
 class MessageCardOut(BaseModel):
     text: str = ""
     url: str = ""
     image_asset_id: uuid.UUID | None = None
     image_url: str | None = None
+    show_url: bool = True
     revision: str = ""
     configured: bool = False
     updated_at: datetime | None = None
@@ -190,6 +226,7 @@ class ClaimedJob(BaseModel):
     card_text: str
     card_url: str
     card_asset_id: uuid.UUID
+    card_show_url: bool = True
     contact_name: str
 
 

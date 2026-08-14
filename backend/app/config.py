@@ -45,10 +45,13 @@ class Settings(BaseSettings):
     source_sql_database: str = ""
     source_sql_username: str = ""
     source_sql_password: str = ""
-    source_sql_driver: str = "ODBC Driver 17 for SQL Server"
+    source_sql_driver: str = "ODBC Driver 18 for SQL Server"
     source_query_file: str = "app/sql/contact_export.sql"
     source_query_timeout_seconds: int = 30
     source_query_max_rows: int = 10000
+
+    openai_api_key: str = ""
+    openai_timeout_seconds: int = 60
 
     ro_enabled: bool = False
     ro_endpoint: str = ""

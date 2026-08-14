@@ -33,7 +33,6 @@ from ..services.scheduler import (
 )
 from ..services.settings_service import require_per_chip_daily_cap, runtime_settings
 
-
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
 
@@ -102,7 +101,7 @@ def prepare_campaign_start(db: Session, campaign: Campaign, actor: User):
         or not variant.card_asset_id
         or not db.get(MessageCardAsset, variant.card_asset_id)
     ):
-        raise ValueError("A campanha não possui um snapshot completo do card da mensagem.")
+        raise ValueError("A campanha não possui um snapshot completo do card.")
 
     accounts = healthy_accounts(db)
     runtime = runtime_settings(db)

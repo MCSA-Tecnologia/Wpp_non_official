@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -28,7 +29,11 @@ def activation_in_progress(db: Session, excluding: uuid.UUID) -> Account | None:
 
 @router.get("", response_model=list[AccountOut])
 def list_accounts(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return list(db.scalars(select(Account).order_by(Account.display_name)))
+    return list(
+        db.scalars(
+            select(Account).where(Account.in_fleet.is_(True)).order_by(Account.display_name)
+        )
+    )
 
 
 @router.post("", response_model=AccountOut, status_code=201)
@@ -60,16 +65,23 @@ def create_account(
     return account
 
 
-@router.post("/bulk", response_model=list[AccountOut], status_code=201)
-def bulk_create_accounts(
+@router.post("/bulk", response_model=list[AccountOut])
+async def bulk_create_accounts(
     payload: AccountBulkCreate,
     actor: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    pattern = re.compile(rf"^{re.escape(payload.prefix)}_(\d+)$")
+    managed: dict[int, Account] = {}
+    for account in db.scalars(select(Account)):
+        match = pattern.fullmatch(account.external_id)
+        if match:
+            managed[int(match.group(1))] = account
+
     created: list[Account] = []
     for number in range(1, payload.count + 1):
         external_id = f"{payload.prefix}_{number:02d}"
-        account = db.scalar(select(Account).where(Account.external_id == external_id))
+        account = managed.get(number)
         if not account:
             account = Account(
                 external_id=external_id,
@@ -79,16 +91,60 @@ def bulk_create_accounts(
             )
             db.add(account)
             created.append(account)
+        elif not account.in_fleet:
+            account.in_fleet = True
+            account.enabled = False
+            account.state = AccountState.disabled
+
+    removed = [
+        account
+        for number, account in managed.items()
+        if number > payload.count and account.in_fleet
+    ]
+    for account in removed:
+        db.execute(delete(AccountAuthRecord).where(AccountAuthRecord.account_id == account.id))
+        account.in_fleet = False
+        account.enabled = False
+        account.state = AccountState.disabled
+        account.phone = None
+        account.qr_code = None
+        account.last_heartbeat_at = None
+        account.last_error = None
+        account.lease_until = None
+        account.lease_owner = None
+        account.node_id = None
+        account.sent_today = 0
+        account.sent_today_date = None
+        account.reconnect_count = 0
+        account.session_revision += 1
+
     db.add(
         AuditLog(
             actor_id=actor.id,
-            action="account.bulk_created",
+            action="account.fleet_synced",
             entity_type="account",
-            details={"count": len(created), "prefix": payload.prefix},
+            details={
+                "target_count": payload.count,
+                "created_count": len(created),
+                "removed_count": len(removed),
+                "prefix": payload.prefix,
+            },
         )
     )
     db.commit()
-    return list(db.scalars(select(Account).order_by(Account.display_name)))
+    await broker.publish(
+        "dashboard",
+        {"type": "accounts.changed", "count": payload.count},
+    )
+    await broker.publish(
+        "workers",
+        {"type": "accounts.changed", "count": payload.count},
+    )
+    return list(
+        db.scalars(
+            select(Account).where(Account.in_fleet.is_(True)).order_by(Account.display_name)
+        )
+    )
 
 
 @router.post("/{account_id}/connect", response_model=AccountOut)

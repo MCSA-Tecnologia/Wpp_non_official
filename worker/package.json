@@ -12,6 +12,7 @@
   "dependencies": {
     "@hapi/boom": "10.0.1",
     "@whiskeysockets/baileys": "7.0.0-rc14",
+    "link-preview-js": "^3.0.0",
     "pino": "9.9.0"
   },
   "devDependencies": {

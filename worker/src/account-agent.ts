@@ -3,6 +3,7 @@ import { persistAckWithRetry } from "./ack-retry.js";
 import type { ApiClient } from "./api-client.js";
 import { config } from "./config.js";
 import { BaileysConnector } from "./connectors/baileys.js";
+import { prepareOutboundMessage, sendPreparedMessage } from "./outbound-message.js";
 import type {
   AccountState,
   ClaimedAccount,
@@ -136,26 +137,40 @@ export class AccountAgent {
           });
           continue;
         }
-        let cardImage: Uint8Array;
-        try {
-          cardImage = await this.api.getCardAsset(job.card_asset_id);
-        } catch (error) {
-          await this.api.updateJob(this.account.id, job, "failed", {
-            error: `Não foi possível carregar a imagem do card: ${error instanceof Error ? error.message : String(error)}`,
-          });
-          continue;
+        const prepared = await prepareOutboundMessage(job, (assetId) =>
+          this.api.getCardAsset(assetId),
+        );
+        if (prepared.imageError) {
+          this.log.warn(
+            {
+              jobId: job.id,
+              format: prepared.message.format,
+              errorType: prepared.imageError instanceof Error
+                ? prepared.imageError.name
+                : "UnknownError",
+            },
+            "custom card image unavailable; using safe pre-send fallback",
+          );
         }
         await this.api.updateJob(this.account.id, job, "sending");
         try {
-          const providerId = await this.connector.send(job.phone, job.message, {
-            text: job.card_text,
-            url: job.card_url,
-            image: cardImage,
-          });
+          const providerId = await sendPreparedMessage(this.connector, job.phone, prepared.message);
           await this.api.updateJob(this.account.id, job, "sent", {
             provider_message_id: providerId,
           });
+          this.log.info(
+            { jobId: job.id, providerMessageId: providerId, format: prepared.message.format },
+            "message sent",
+          );
         } catch (error) {
+          this.log.warn(
+            {
+              jobId: job.id,
+              format: prepared.message.format,
+              errorType: error instanceof Error ? error.name : "UnknownError",
+            },
+            "message send failed",
+          );
           await this.api.updateJob(this.account.id, job, "failed", {
             error: error instanceof Error ? error.message : String(error),
           });

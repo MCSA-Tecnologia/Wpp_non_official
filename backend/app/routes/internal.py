@@ -40,7 +40,6 @@ from ..security import decrypt_json, encrypt_json
 from ..services.campaign_state import maybe_complete_campaign
 from ..services.campaigns import materialize_job_message
 
-
 router = APIRouter(prefix="/internal", tags=["worker"], dependencies=[Depends(require_worker)])
 
 
@@ -65,7 +64,7 @@ async def worker_events():
 def get_card_asset(asset_id: uuid.UUID, db: Session = Depends(get_db)):
     asset = db.get(MessageCardAsset, asset_id)
     if not asset:
-        raise HTTPException(status_code=404, detail="Imagem do card não encontrada")
+        raise HTTPException(status_code=404, detail="Imagem da mensagem não encontrada")
     return Response(
         asset.content,
         media_type=asset.content_type,
@@ -278,7 +277,7 @@ def claim_job(
         return None
     if not variant.card_text or not variant.card_url or not variant.card_asset_id:
         job.state = JobState.failed
-        job.last_error = "Campanha sem snapshot completo do card da mensagem"
+        job.last_error = "Campanha sem snapshot completo do card"
         db.commit()
         return None
     lease_token = str(uuid.uuid4())
@@ -304,6 +303,7 @@ def claim_job(
         card_text=variant.card_text,
         card_url=variant.card_url,
         card_asset_id=variant.card_asset_id,
+        card_show_url=variant.card_show_url,
         contact_name=contact.name,
     )
 

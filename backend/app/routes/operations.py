@@ -19,15 +19,37 @@ from ..models import (
     CampaignState,
     Contact,
     JobState,
-    MessageJob,
     MessageCardAsset,
+    MessageJob,
     User,
 )
-from ..schemas import MessageCardOut, ReviewDecision, ReviewOut, SettingUpdate
+from ..schemas import (
+    MessageGenerationSettingsOut,
+    MessageGenerationSettingsUpdate,
+    MessageCardOut,
+    MessageVariationGenerateOut,
+    MessageVariationGenerateRequest,
+    ReviewDecision,
+    ReviewOut,
+    SettingUpdate,
+    SourceDatabaseOut,
+    SourceDatabaseUpdate,
+)
 from ..services.message_card import message_card_settings, save_message_card
+from ..services.message_variations import (
+    MessageGenerationNotConfigured,
+    MessageGenerationTimeout,
+    MessageGenerationUpstreamError,
+    generate_message_variations,
+    message_generation_settings,
+    save_message_generation_settings,
+)
 from ..services.query_export import export_contacts_xlsx
 from ..services.settings_service import runtime_settings, save_runtime_settings
-
+from ..services.source_database import (
+    save_source_database_settings,
+    source_database_settings,
+)
 
 router = APIRouter(tags=["operations"])
 
@@ -49,6 +71,60 @@ def update_runtime_settings(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.get("/settings/message-generation", response_model=MessageGenerationSettingsOut)
+def get_message_generation_settings(
+    _: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    return message_generation_settings(db)
+
+
+@router.put("/settings/message-generation", response_model=MessageGenerationSettingsOut)
+def update_message_generation_settings(
+    payload: MessageGenerationSettingsUpdate,
+    actor: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        return save_message_generation_settings(db, payload, actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/message-variations/generate", response_model=MessageVariationGenerateOut)
+async def generate_variations(
+    payload: MessageVariationGenerateRequest,
+    actor: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return await generate_message_variations(db, payload, actor)
+    except MessageGenerationNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except MessageGenerationTimeout as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except MessageGenerationUpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/settings/source-database", response_model=SourceDatabaseOut)
+def get_source_database_settings(
+    _: User = Depends(require_admin), db: Session = Depends(get_db)
+):
+    return source_database_settings(db)
+
+
+@router.put("/settings/source-database", response_model=SourceDatabaseOut)
+def update_source_database_settings(
+    payload: SourceDatabaseUpdate,
+    actor: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        return save_source_database_settings(db, payload, actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("/settings/message-card", response_model=MessageCardOut)
 def get_message_card(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return message_card_settings(db)
@@ -59,6 +135,7 @@ async def update_message_card(
     text: str = Form(...),
     url: str = Form(...),
     image: UploadFile | None = File(default=None),
+    show_url: bool = Form(default=True),
     actor: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -71,6 +148,7 @@ async def update_message_card(
             image_content=content,
             image_filename=image.filename if image else None,
             actor=actor,
+            show_url=show_url,
         )
     except ValueError as exc:
         db.rollback()
@@ -84,7 +162,7 @@ def get_message_card_image(
     card = message_card_settings(db)
     asset = db.get(MessageCardAsset, card["image_asset_id"]) if card["image_asset_id"] else None
     if not asset:
-        raise HTTPException(status_code=404, detail="Imagem do card não encontrada")
+        raise HTTPException(status_code=404, detail="Imagem da mensagem não encontrada")
     return Response(
         asset.content,
         media_type=asset.content_type,
@@ -93,9 +171,11 @@ def get_message_card_image(
 
 
 @router.post("/queries/contacts/export")
-def query_export(_: User = Depends(get_current_user)):
+def query_export(
+    _: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
     try:
-        content = export_contacts_xlsx()
+        content = export_contacts_xlsx(db)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     filename = f"contatos_query_{datetime.now():%Y%m%d_%H%M%S}.xlsx"

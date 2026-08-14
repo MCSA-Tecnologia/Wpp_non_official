@@ -85,7 +85,7 @@ Uma campanha pode estar ativa por vez. Jobs adicionais ficam agendados. O agenda
 
 CSV e XLSX precisam conter `Telefone`, `pessoaId`, `Credor` e `Campanha`; `Nome`, `email` e `observacao` são opcionais. O painel mostra bruto, válido, duplicado e inválido antes da campanha.
 
-O botão de query executa exclusivamente `backend/app/sql/contact_export.sql`, com credencial SQL Server somente-leitura, timeout e limite de linhas. Ele gera XLSX para download e nunca cria campanha automaticamente. Ajuste a query nomeada ao schema real antes de habilitá-la.
+O botão de query executa exclusivamente `backend/app/sql/contact_export.sql`, com timeout e limite de linhas. Um administrador cadastra `SERVER_OLD`, `DATABASE_OLD`, `USERNAME_OLD` e `PASSWORD_OLD` na tela Configurações; a senha é armazenada criptografada e não volta para o navegador. As variáveis `AUTOWPP_SOURCE_SQL_*` continuam disponíveis como fallback de implantação. O botão gera XLSX para download e nunca cria campanha automaticamente.
 
 ## Falhas e recuperação
 

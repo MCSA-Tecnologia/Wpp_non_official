@@ -82,6 +82,7 @@ def test_card_save_is_audited_and_old_campaign_snapshot_is_immutable(
         card_text=original["text"],
         card_url=original["url"],
         card_asset_id=original["image_asset_id"],
+        card_show_url=original["show_url"],
     )
     db.add(snapshot)
     db.commit()
@@ -92,6 +93,7 @@ def test_card_save_is_audited_and_old_campaign_snapshot_is_immutable(
         image_content=png_1x1,
         image_filename="novo.png",
         actor=actor,
+        show_url=False,
     )
 
     assert replacement["configured"] is True
@@ -101,12 +103,36 @@ def test_card_save_is_audited_and_old_campaign_snapshot_is_immutable(
     assert snapshot.card_text == original["text"]
     assert snapshot.card_url == original["url"]
     assert snapshot.card_asset_id == original["image_asset_id"]
+    assert snapshot.card_show_url is True
+    assert replacement["show_url"] is False
     assert db.scalar(select(func.count(MessageCardAsset.id))) == 2
     assert db.scalar(
         select(func.count(AuditLog.id)).where(
             AuditLog.action == "settings.message_card.updated"
         )
     ) == 2
+
+
+def test_link_visibility_is_versioned_without_replacing_the_image(
+    db, configure_message_card
+):
+    actor = make_admin(db)
+    original = configure_message_card(actor)
+
+    embedded = save_message_card(
+        db,
+        text=original["text"],
+        url=original["url"],
+        image_content=None,
+        image_filename=None,
+        actor=actor,
+        show_url=False,
+    )
+
+    assert original["show_url"] is True
+    assert embedded["show_url"] is False
+    assert embedded["image_asset_id"] == original["image_asset_id"]
+    assert embedded["revision"] != original["revision"]
 
 
 def test_campaign_confirmation_requires_current_card_revision(db, configure_message_card):

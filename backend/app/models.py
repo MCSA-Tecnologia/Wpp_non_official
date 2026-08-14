@@ -96,6 +96,7 @@ class Account(Base):
         Enum(AccountState, native_enum=False), default=AccountState.disabled, index=True
     )
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    in_fleet: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     node_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     lease_owner: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -220,6 +221,7 @@ class MessageVariant(Base):
     card_asset_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("message_card_assets.id"), nullable=True
     )
+    card_show_url: Mapped[bool] = mapped_column(Boolean, default=True)
     weight: Mapped[int] = mapped_column(Integer, default=100)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 

@@ -2,13 +2,16 @@ import makeWASocket, {
   Browsers,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  generateWAMessageFromContent,
   makeCacheableSignalKeyStore,
+  prepareWAMessageMedia,
+  proto,
 } from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import type { ApiClient } from "../api-client.js";
 import { loadRemoteAuthState } from "../remote-auth.js";
-import type { ConnectorEvents, MessageCard, WhatsAppConnector } from "../types.js";
+import type { ConnectorEvents, OutboundMessage, WhatsAppConnector } from "../types.js";
 import type { AnyMessageContent } from "@whiskeysockets/baileys";
 
 const logger = pino({ level: process.env.AUTOWPP_LOG_LEVEL ?? "info" });
@@ -20,18 +23,59 @@ export function normalizeMessageStatus(status: unknown): number | null {
   return Math.min(numeric, 4);
 }
 
-export function buildCardMessage(message: string, card: MessageCard): AnyMessageContent {
+type StandardOutboundMessage = Exclude<OutboundMessage, { format: "interactive_link" }>;
+
+export function buildMessageContent(message: StandardOutboundMessage): AnyMessageContent {
+  if (message.format === "custom_native_link") {
+    return {
+      text: message.text,
+      linkPreview: {
+        "canonical-url": message.url,
+        "matched-text": message.url,
+        title: message.title,
+        jpegThumbnail: Buffer.from(message.thumbnail),
+      },
+    };
+  }
+  // The safe pre-send fallback lets Baileys fetch the site's native metadata.
+  return { text: message.text };
+}
+
+type InteractiveLinkMessage = Extract<OutboundMessage, { format: "interactive_link" }>;
+
+export function buildInteractiveMessageContent(
+  message: InteractiveLinkMessage,
+  imageMessage?: proto.Message.IImageMessage,
+): proto.IMessage {
   return {
-    text: message,
-    contextInfo: {
-      externalAdReply: {
-        title: card.text,
-        body: new URL(card.url).hostname,
-        mediaType: 1,
-        thumbnail: card.image,
-        sourceUrl: card.url,
-        renderLargerThumbnail: true,
-        showAdAttribution: false,
+    viewOnceMessage: {
+      message: {
+        messageContextInfo: {
+          deviceListMetadata: {},
+          deviceListMetadataVersion: 2,
+        },
+        interactiveMessage: proto.Message.InteractiveMessage.fromObject({
+          header: {
+            title: message.title,
+            hasMediaAttachment: Boolean(imageMessage),
+            imageMessage,
+          },
+          body: { text: message.text },
+          nativeFlowMessage: {
+            buttons: [
+              {
+                name: "cta_url",
+                buttonParamsJson: JSON.stringify({
+                  display_text: "Acessar",
+                  url: message.url,
+                  merchant_url: message.url,
+                }),
+              },
+            ],
+            messageParamsJson: "",
+            messageVersion: 3,
+          },
+        }),
       },
     },
   };
@@ -129,10 +173,33 @@ export class BaileysConnector implements WhatsAppConnector {
     return Boolean(result?.[0]?.exists);
   }
 
-  async send(phone: string, message: string, card: MessageCard): Promise<string> {
+  async send(phone: string, message: OutboundMessage): Promise<string> {
     if (!this.socket || !this.ready) throw new Error("WhatsApp não está conectado");
     const jid = `${phone.replace(/\D/g, "")}@s.whatsapp.net`;
-    const sent = await this.socket.sendMessage(jid, buildCardMessage(message, card));
+    if (message.format === "interactive_link") {
+      let imageMessage: proto.Message.IImageMessage | undefined;
+      if (message.thumbnail) {
+        const prepared = await prepareWAMessageMedia(
+          { image: Buffer.from(message.thumbnail) },
+          { upload: this.socket.waUploadToServer, logger },
+        );
+        imageMessage = prepared.imageMessage ?? undefined;
+      }
+      const userJid = this.socket.user?.id;
+      if (!userJid) throw new Error("WhatsApp conectado sem identificar a conta");
+      const generated = generateWAMessageFromContent(
+        jid,
+        buildInteractiveMessageContent(message, imageMessage),
+        { userJid },
+      );
+      const providerId = generated.key.id;
+      if (!providerId || !generated.message) {
+        throw new Error("WhatsApp não gerou o identificador do card interativo");
+      }
+      await this.socket.relayMessage(jid, generated.message, { messageId: providerId });
+      return providerId;
+    }
+    const sent = await this.socket.sendMessage(jid, buildMessageContent(message));
     if (!sent?.key.id) throw new Error("WhatsApp não retornou o identificador da mensagem");
     return sent.key.id;
   }

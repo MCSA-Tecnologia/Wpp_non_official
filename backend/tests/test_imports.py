@@ -7,8 +7,18 @@ from pathlib import Path
 import pandas as pd
 from sqlalchemy import select
 
-from app.models import Contact, ImportRow, MessageVariant, Role, User
-from app.schemas import CampaignCreate
+from app.models import (
+    CampaignState,
+    Contact,
+    ImportRow,
+    JobState,
+    MessageJob,
+    MessageVariant,
+    Role,
+    User,
+)
+from app.routes.operations import decide_review
+from app.schemas import CampaignCreate, ReviewDecision
 from app.security import hash_password
 from app.services.campaigns import create_campaign, materialize_job_message
 from app.services.imports import normalize_phone, persist_import
@@ -89,6 +99,85 @@ def test_csv_and_xlsx_name_column_reach_final_personalized_message(db, configure
         assert materialize_job_message(contact, message_variant) == (
             "Olá Maria Silva, proposta do Banco A."
         )
+
+
+def test_campaign_persists_original_and_variations_with_the_same_card_snapshot(
+    db, configure_message_card, monkeypatch
+):
+    user = User(
+        id=uuid.uuid4(),
+        email="variation-campaign@example.com",
+        password_hash="x",
+        role=Role.operator,
+    )
+    db.add(user)
+    db.commit()
+    card = configure_message_card(user)
+    content = (
+        "Nome,Telefone,pessoaId,Credor,Campanha\n"
+        "Ana,31999999991,1,Banco A,Teste\n"
+        "Bia,31999999992,2,Banco B,Teste\n"
+        "Caio,31999999993,3,Banco C,Teste\n"
+    ).encode()
+    batch = persist_import(db, filename="variacoes.csv", content=content, actor=user)
+    selected_indexes = iter((0, 1, 2))
+
+    def choose(items):
+        return items[next(selected_indexes)]
+
+    monkeypatch.setattr("app.services.campaigns.secrets.choice", choose)
+    campaign = create_campaign(
+        db,
+        CampaignCreate(
+            name="Campanha com variações",
+            import_id=batch.id,
+            message="Olá NOME_DO_CLIENTE, proposta do CREDOR.",
+            message_variations=[
+                "Oi NOME_DO_CLIENTE, veja a proposta do CREDOR.",
+                "NOME_DO_CLIENTE, o CREDOR tem uma proposta para você.",
+            ],
+            card_revision=card["revision"],
+            confirmed_real_send=True,
+            interval_mean_minutes=1,
+        ),
+        user,
+        35,
+    )
+
+    variants = list(
+        db.scalars(
+            select(MessageVariant)
+            .where(MessageVariant.campaign_id == campaign.id)
+            .order_by(MessageVariant.body)
+        )
+    )
+    jobs = list(
+        db.scalars(
+            select(MessageJob)
+            .where(MessageJob.campaign_id == campaign.id)
+            .order_by(MessageJob.id)
+        )
+    )
+    assert len(variants) == 3
+    assert {job.variant_id for job in jobs} == {variant.id for variant in variants}
+    assert {variant.card_text for variant in variants} == {card["text"]}
+    assert {variant.card_url for variant in variants} == {card["url"]}
+    assert {variant.card_asset_id for variant in variants} == {card["image_asset_id"]}
+
+    retried = jobs[0]
+    assigned_variant_id = retried.variant_id
+    retried.state = JobState.failed
+    campaign.state = CampaignState.paused
+    db.commit()
+    decide_review(
+        retried.id,
+        ReviewDecision(action="retry"),
+        actor=user,
+        db=db,
+    )
+    db.refresh(retried)
+    assert retried.state == JobState.pending
+    assert retried.variant_id == assigned_variant_id
 
 
 def test_system_templates_put_name_immediately_after_person_id():
