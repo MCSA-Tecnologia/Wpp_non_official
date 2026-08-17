@@ -34,6 +34,12 @@ def test_inserted_values_are_not_processed_recursively():
     )
 
 
+def test_underlining_is_rendered_after_contact_personalization():
+    expected = "O\u0332l\u0332á\u0332 M\u0332a\u0332r\u0332i\u0332a\u0332 S\u0332i\u0332l\u0332v\u0332a\u0332"
+    assert render_message("<u>Olá NOME_DO_CLIENTE</u>", "Maria Silva") == expected
+    assert render_message("Olá <u>NOME_DO_CLIENTE</u>, tudo bem?", "") == "Olá, tudo bem?"
+
+
 def test_materialized_job_message_uses_contact_name_and_creditor():
     contact = Contact(name="Maria Aparecida da Silva", credor="Banco A")
     variant = MessageVariant(body="Olá NOME_DO_CLIENTE, proposta do CREDOR.")

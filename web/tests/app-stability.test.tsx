@@ -144,6 +144,44 @@ describe("dashboard stability", () => {
     expect(apiMock).toHaveBeenCalledWith("/imports/batch-1");
   });
 
+  it("formats selected message text and sends the formatted text to variation generation", async () => {
+    render(<App />);
+    await screen.findByRole("button", { name: "Campanhas" });
+    fireEvent.click(screen.getByRole("button", { name: "Campanhas" }));
+
+    const textarea = await screen.findByLabelText("Texto") as HTMLTextAreaElement;
+    textarea.setSelectionRange(0, 7);
+    fireEvent.click(screen.getByRole("button", { name: "Aplicar negrito" }));
+    expect(textarea.value).toContain("*Bom dia*");
+
+    const italicStart = textarea.value.indexOf("informação");
+    textarea.setSelectionRange(italicStart, italicStart + "informação".length);
+    fireEvent.click(screen.getByRole("button", { name: "Aplicar itálico" }));
+    expect(textarea.value).toContain("_informação_");
+
+    const underlineStart = textarea.value.indexOf("importante");
+    textarea.setSelectionRange(underlineStart, underlineStart + "importante".length);
+    fireEvent.click(screen.getByRole("button", { name: "Aplicar sublinhado" }));
+    expect(textarea.value).toContain("<u>importante</u>");
+
+    const strikethroughStart = textarea.value.indexOf("você");
+    textarea.setSelectionRange(strikethroughStart, strikethroughStart + "você".length);
+    fireEvent.click(screen.getByRole("button", { name: "Aplicar texto cortado" }));
+    expect(textarea.value).toContain("~você~");
+
+    fireEvent.click(screen.getByRole("button", { name: "Criar variações da mensagem" }));
+    fireEvent.change(screen.getByLabelText("Quantidade de variações"), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Gerar variações" }));
+
+    await waitFor(() => expect(apiMock).toHaveBeenCalledWith(
+      "/message-variations/generate",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ original: textarea.value, count: 1 }),
+      }),
+    ));
+  });
+
   it("generates, edits, approves and discards message variations", async () => {
     render(<App />);
     await screen.findByRole("button", { name: "Campanhas" });

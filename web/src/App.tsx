@@ -1,12 +1,14 @@
 import {
   Activity,
   AlertTriangle,
+  Bold,
   Check,
   ChevronRight,
   CirclePause,
   Database,
   Gauge,
   Image as ImageIcon,
+  Italic,
   LayoutDashboard,
   LogOut,
   MessageSquareText,
@@ -19,6 +21,8 @@ import {
   Shuffle,
   ShieldCheck,
   Smartphone,
+  Strikethrough,
+  Underline,
   Upload,
   Users,
   X,
@@ -258,6 +262,33 @@ function CampaignBuilder({ userId, accounts, campaigns, settings, messageCard, m
   const [variationSelectionStale, setVariationSelectionStale] = useState(false);
   const [variationBusy, setVariationBusy] = useState(false);
   const [variationError, setVariationError] = useState("");
+  const messageTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  function formatMessageSelection(format: "bold" | "italic" | "underline" | "strikethrough") {
+    const textarea = messageTextareaRef.current;
+    if (!textarea) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const selection = message.slice(start, end);
+
+    const [prefix, suffix] = format === "bold"
+      ? ["*", "*"]
+      : format === "italic"
+        ? ["_", "_"]
+        : format === "underline"
+          ? ["<u>", "</u>"]
+          : ["~", "~"];
+    const formatted = `${prefix}${selection}${suffix}`;
+    const nextMessage = `${message.slice(0, start)}${formatted}${message.slice(end)}`;
+    const nextSelectionStart = start + prefix.length;
+    const nextSelectionEnd = selection ? nextSelectionStart + selection.length : nextSelectionStart;
+
+    campaignDraft.setValue((current) => ({ ...current, message: nextMessage }));
+    window.requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(nextSelectionStart, nextSelectionEnd);
+    });
+  }
 
   useEffect(() => {
     if (!variationsOpen) return;
@@ -382,8 +413,8 @@ function CampaignBuilder({ userId, accounts, campaigns, settings, messageCard, m
         <div className="step-heading"><span>02</span><div><h2>Mensagem</h2><p>Uma versão nesta primeira etapa</p></div></div>
         <label>Nome da campanha<input value={name} onChange={(event) => campaignDraft.setValue((current) => ({ ...current, name: event.target.value }))} placeholder="Ex.: Cobrança agosto" /></label>
         <div className="message-text-field">
-          <div className="message-text-heading"><label htmlFor="campaign-message">Texto</label><button type="button" className="variation-trigger" aria-label="Criar variações da mensagem" title="Criar variações da mensagem" onClick={openVariationModal}><Shuffle size={18} /></button>{approvedVariations.length > 0 && <span className="variation-badge">Original + {approvedVariations.length} variações</span>}</div>
-          <textarea id="campaign-message" value={message} onChange={(event) => campaignDraft.setValue((current) => ({ ...current, message: event.target.value }))} rows={5} />
+          <div className="message-text-heading"><label htmlFor="campaign-message">Texto</label><div className="message-format-toolbar" role="toolbar" aria-label="Formatação da mensagem"><button type="button" aria-label="Aplicar negrito" title="Negrito" onMouseDown={(event) => event.preventDefault()} onClick={() => formatMessageSelection("bold")}><Bold size={16} /></button><button type="button" aria-label="Aplicar itálico" title="Itálico" onMouseDown={(event) => event.preventDefault()} onClick={() => formatMessageSelection("italic")}><Italic size={16} /></button><button type="button" aria-label="Aplicar sublinhado" title="Sublinhado" onMouseDown={(event) => event.preventDefault()} onClick={() => formatMessageSelection("underline")}><Underline size={16} /></button><button type="button" aria-label="Aplicar texto cortado" title="Cortado" onMouseDown={(event) => event.preventDefault()} onClick={() => formatMessageSelection("strikethrough")}><Strikethrough size={16} /></button></div><button type="button" className="variation-trigger" aria-label="Criar variações da mensagem" title="Criar variações da mensagem" onClick={openVariationModal}><Shuffle size={18} /></button>{approvedVariations.length > 0 && <span className="variation-badge">Original + {approvedVariations.length} variações</span>}</div>
+          <textarea ref={messageTextareaRef} id="campaign-message" value={message} onChange={(event) => campaignDraft.setValue((current) => ({ ...current, message: event.target.value }))} rows={5} />
           <small>Use NOME_DO_CLIENTE para inserir o primeiro e o último nomes e CREDOR para inserir o credor da planilha.</small>
           {approvedVariations.length > 0 && approvedVariationSource !== message && <div className="variation-stale"><AlertTriangle size={15} />O texto original mudou depois da geração. As variações aprovadas foram mantidas; revise-as antes do envio.</div>}
         </div>

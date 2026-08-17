@@ -159,7 +159,11 @@ label small { color: #85928c; font-weight: 400; }
 .message-text-field { display: grid; gap: 6px; }
 .message-text-heading { min-height: 32px; display: flex; align-items: center; gap: 8px; }
 .message-text-heading label { margin-right: auto; }
-.variation-trigger { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid #b9d5c7; border-radius: 8px; color: var(--green-dark); background: var(--green-soft); cursor: pointer; }
+.message-format-toolbar { display: flex; align-items: center; gap: 4px; }
+.message-format-toolbar button { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid #d4ded8; border-radius: 8px; color: #52625a; background: #fbfcfb; cursor: pointer; transition: border .2s, color .2s, background .2s; }
+.message-format-toolbar button:hover { border-color: #9fcab5; color: var(--green-dark); background: #f1faf5; }
+.message-format-toolbar button:focus-visible, .variation-trigger:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.variation-trigger { width: 32px; height: 32px; margin-left: 10px; display: grid; place-items: center; border: 1px solid #b9d5c7; border-radius: 8px; color: var(--green-dark); background: var(--green-soft); cursor: pointer; }
 .variation-trigger:hover { border-color: var(--green); background: #dcf5e8; }
 .variation-badge { padding: 5px 8px; border-radius: 999px; color: var(--green-dark); background: var(--green-soft); font-size: 9px; font-weight: 800; }
 .variation-stale { display: flex; align-items: flex-start; gap: 7px; padding: 9px 10px; border: 1px solid #efd69f; border-radius: 8px; color: #895b0e; background: #fff8e8; font-size: 10px; line-height: 1.4; }

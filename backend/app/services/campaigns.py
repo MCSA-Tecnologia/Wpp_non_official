@@ -27,6 +27,7 @@ from .message_variations import validate_message_variations
 PLACEHOLDER_PATTERN = re.compile(
     r"(?P<name>(?i:NOME\s*_?\s*DO\s*_?\s*CLIENTE))|(?P<creditor>\bCREDOR\b)"
 )
+UNDERLINE_PATTERN = re.compile(r"<u>(.*?)</u>", re.DOTALL)
 
 
 def _short_customer_name(name: str) -> str:
@@ -45,6 +46,16 @@ def _clean_empty_name_spacing(message: str) -> str:
     return re.sub(r"^[^\S\r\n]+", "", message, flags=re.MULTILINE)
 
 
+def _render_underlines(message: str) -> str:
+    def underline(match: re.Match[str]) -> str:
+        return "".join(
+            character if character.isspace() else f"{character}\u0332"
+            for character in match.group(1)
+        )
+
+    return UNDERLINE_PATTERN.sub(underline, message)
+
+
 def render_message(template: str, name: str, creditor: str = "") -> str:
     short_name = _short_customer_name(name)
 
@@ -54,6 +65,7 @@ def render_message(template: str, name: str, creditor: str = "") -> str:
     # A single substitution pass prevents placeholders inside spreadsheet values
     # from being interpreted recursively.
     rendered = PLACEHOLDER_PATTERN.sub(replacement, template)
+    rendered = _render_underlines(rendered)
     return _clean_empty_name_spacing(rendered) if not short_name else rendered
 
 
